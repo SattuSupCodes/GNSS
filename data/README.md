@@ -24,13 +24,17 @@ data/
 ├── processed/        # Preprocessed trip Parquets + fitted metadata
 │   └── trip_<id>.parquet
 ├── processed/synchronized/   # Time-aligned S + V reference streams per trip
+├── calibrated/       # Phase 2: gravity/cal/orient/aligned enriched trips
 ├── splits/           # Trip-level train/validation/testing split lists
+├── training/         # Phase 2: fixed-length window sequences (per split)
+├── validation/       # Phase 2: fixed-length window sequences (per split)
+├── testing/          # Phase 2: fixed-length window sequences (per split)
 ├── blackout/         # Synthetic GNSS blackout scenarios for evaluation (future)
 └── maps/             # Road network data (OSM/Mapbox) for map matching (future)
 ```
 
-(`interim/`, `training/`, `validation/`, `testing/` data folders are not used;
-splits live as lists of trip ids in `splits/`.)
+(`interim/` is not used; window sequences in `training|validation|testing/`
+are long-format frames grouped by `sequence_id`.)
 
 ## Data Flow
 
@@ -42,10 +46,10 @@ Smartphone extraction (src/data/: schema, loader, extractor)
 Cleaning, outlier removal, low-pass, uniform resample, z-score, ENU coords
     ↓  (src/preprocessing/, configs/preprocessing_config.yaml)
 Trip Parquerts (data/processed/trip_<id>.parquet)
-    ↓  scripts/synchronize_data.py   (reference only)
-Synchronized smartphone + vehicle reference parquets (data/processed/synchronized/)
-    ↓
-Trip-level train/val/testing split lists (data/splits/, no leakage)
+    ↓  scripts/calibrate_dataset.py  (Phase 2)
+Calibrated trips (gravity_est/cal/orient/aligned) → data/calibrated/
+    ↓  scripts/generate_sequences.py (Phase 2, split-aware)
+Fixed-length window sequences → data/{training,validation,testing}/
     ↓
 Smartphone-only runtime input; vehicle used offline as ground truth
 ```
@@ -60,9 +64,12 @@ Smartphone-only runtime input; vehicle used offline as ground truth
 python scripts/prepare_dataset.py --trip vw16b        # construct one trip
 python scripts/prepare_dataset.py --all               # construct all 72
 python scripts/synchronize_data.py --trip vw16b        # S + aligned V reference
+python scripts/calibrate_dataset.py                    # Phase 2 calibration
+python scripts/generate_sequences.py                   # Phase 2 window sequences
 ```
 
-See `docs/preprocessing.md` for the full pipeline chain and sync semantics.
+See `docs/preprocessing.md` for the full pipeline chain and sync semantics, and
+`docs/calibration.md` for the Phase 2 calibration + sequence layer.
 
 ## Getting the Dataset (Step by Step)
 

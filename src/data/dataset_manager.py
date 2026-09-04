@@ -28,20 +28,38 @@ from .smartphone_extractor import SmartphoneExtractor
 
 
 class DatasetManager:
-    """Simple, stable interface to trips, metadata, raw and processed data."""
+    """Simple, stable interface to trips, metadata, raw and processed data.
+
+    Phase 2 additions (calibration + sequences):
+      dm.load_calibrated_trip(trip_id)      # calibrated/aligned frame (DataFrame)
+      dm.load_split("train")                # long-format window frame (DataFrame)
+    """
 
     def __init__(
         self,
         raw_root: str,
         processed_root: str,
         split_root: Optional[str] = None,
+        calibrated_root: Optional[str] = None,
+        sequences_root: Optional[str] = None,
     ):
         self.raw_root = Path(raw_root).expanduser().resolve()
         self.processed_root = Path(processed_root).expanduser().resolve()
+        data_dir = self.processed_root.parent  # "<repo>/data"
         self.split_root = (
             Path(split_root).expanduser().resolve()
             if split_root
-            else self.processed_root / ".." / ".." / "data"
+            else data_dir / "splits"
+        )
+        self.calibrated_root = (
+            Path(calibrated_root).expanduser().resolve()
+            if calibrated_root
+            else data_dir / "calibrated"
+        )
+        self.sequences_root = (
+            Path(sequences_root).expanduser().resolve()
+            if sequences_root
+            else data_dir
         )
 
         self.dataset = IOVNBDDataset(str(self.raw_root))
@@ -112,6 +130,69 @@ class DatasetManager:
             except Exception:  # noqa: BLE001 - tolerate single bad trip
                 continue
         return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    # ------------------------------------------------------------------ #
+    # Calibrated trips (Phase 2)                                         #
+    # ------------------------------------------------------------------ #
+
+    def calibrated_trips(self) -> List[str]:
+        """Trip ids with calibrated parquet files under the calibrated root."""
+        if not self.calibrated_root.is_dir():
+            return []
+        return sorted(
+            p.stem.replace("trip_", "")
+            for p in self.calibrated_root.glob("trip_*.parquet")
+        )
+
+    def load_calibrated_trip(self, trip_id: str) -> "pd.DataFrame":
+        """Load a calibrated/aligned trip.
+
+        Prefers ``data/calibrated/trip_<id>.parquet``. When absent, runs the
+        Phase 2 calibration pipeline in memory over the processed trip (raw
+        columns preserved, calibrated columns appended) so the API works before
+        ``scripts/calibrate_dataset.py`` has been run. Raises FileNotFoundError
+        when the trip is unknown.
+        """
+        path = self.calibrated_root / f"trip_{trip_id.lower()}.parquet"
+        if path.is_file():
+            return pd.read_parquet(path)
+        processed = self.load_processed_trip(trip_id)
+        from ..calibration.calibration_pipeline import (  # local import to keep data layer import-light
+            CalibrationConfig,
+            CalibrationPipeline,
+        )
+
+        result = CalibrationPipeline(CalibrationConfig()).run(processed.data)
+        return result.frame
+
+    # ------------------------------------------------------------------ #
+    # Sequences (Phase 2)                                                 #
+    # ------------------------------------------------------------------ #
+
+    def load_split(self, split_name: str) -> "pd.DataFrame":
+        """Load the long-format window frame for one split.
+
+        Reads ``<sequences_root>/<split_name>/sequences.parquet``; raises when
+        it does not exist with a pointer to ``scripts/generate_sequences.py``.
+        """
+        if split_name not in ("train", "validation", "test"):
+            raise ValueError(
+                f"split_name must be one of train/validation/test, got {split_name!r}"
+            )
+        dir_name = {"train": "training", "validation": "validation", "test": "testing"}[split_name]
+        path = self.sequences_root / dir_name / "sequences.parquet"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Sequences for split '{split_name}' not found at {path}. "
+                "Run: python scripts/generate_sequences.py"
+            )
+        return pd.read_parquet(path)
+
+    def split_assignments(self) -> Dict[str, str]:
+        """Trip id -> split map loaded from the Phase 1 split files."""
+        from .sequence_generator import load_split_assignments
+
+        return load_split_assignments(self.split_root)
 
     # ------------------------------------------------------------------ #
     # Validation                                                         #

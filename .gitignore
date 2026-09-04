@@ -24,6 +24,9 @@ data/raw/*
 data/interim/*
 data/processed/*
 data/synchronized/*
+# Generated metadata / build outputs
+data/*_metadata.json
+data/calibrated/*
 data/training/*
 data/validation/*
 data/testing/*

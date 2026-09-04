@@ -166,3 +166,16 @@ pedal position.
   GNSS (lat/lon/speed/accuracy/heading), timestamps.
 - Reference (offline, evaluation only): paired `V-*.csv` when a trip has one.
 - The loader deliberately excludes vehicle columns from the smartphone output.
+
+## 9. Phase 2 Outputs
+
+To keep this document stable, Phase 2 adds downstream artifacts **without
+changing any Phase 1 file**:
+
+- `data/calibrated/trip_<id>.parquet` — processed trip + `gravity_est_*`,
+  `linear_accel_*`, `<sensor>_<axis>_cal`, `orient_*`, `<sensor>_<axis>_aligned`,
+  `category`, `driver` (see `docs/calibration.md`).
+- `data/{training,validation,testing}/sequences.parquet` — fixed-length window
+  frames with sequence provenance columns, split along `data/splits/*.txt`.
+- Resource columns like `m (Driver B)`/`S (Driver A)`/`Y (Driver D)` folder names
+  map to users via the synchronization/calibration stage instead of the loader.

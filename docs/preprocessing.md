@@ -7,6 +7,11 @@ smartphone–vehicle synchronization step.
 Both stages are configuration-driven
 (`configs/preprocessing_config.yaml`) and deterministic.
 
+> **Phase 2 follows this step.** The calibration/alignment stage (gravity,
+> sensor calibration, orientation, phone alignment — the `*_est`/`*_cal`/
+> `*_aligned`/`orient_*` columns) and the ML-ready window slicing are documented
+> in `docs/calibration.md`.
+
 ---
 
 ## 1. Per-Trip Pipeline
@@ -94,6 +99,10 @@ python scripts/prepare_dataset.py --trip vw16b          # or --all
 # smartphone-native + synchronized vehicle reference parquets
 python scripts/synchronize_data.py --trip vw16b          # estimate offset
 python scripts/synchronize_data.py --trip vw16b --offset 0.0   # opt-in manual offset
+
+# Phase 2: calibrate + align + build leakage-safe window sequences
+python scripts/calibrate_dataset.py
+python scripts/generate_sequences.py
 ```
 
 Both scripts print row counts / coverage stats. Run `python -m pytest` from the

@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------- #
+# Phase 2 - Calibration configuration.                                         #
+# Drives the calibration pipeline (src/calibration/calibration_pipeline.py).   #
+# Paths below are RELATIVE to the repository root (portable across machines).  #
+# ---------------------------------------------------------------------------- #
+
+calibration:
+  gravity:
+    method: "lowpass"       # lowpass | mean (temporal low-frequency estimation)
+    cutoff_hz: 0.05         # gravity lives below ~0.05 Hz on a moving vehicle
+    filter_order: 4
+    fs: 10.0                # nominal smartphone rate (Hz)
+    min_samples: 20
+
+  orientation:
+    method: "complementary"
+    fusion_gain: 0.1        # weight of accel/mag 'measurement' vs gyro predict
+    ema_tau_s: 1.0          # accel EMA time constant used when no gravity cols
+    mag_field_min_ut: 20.0  # Earth-field band for magnetometer trust
+    mag_field_max_ut: 70.0
+
+  alignment:
+    convention: "TOP_NORTH_SCREEN_UP"   # preset name (see phone_alignment.PRESET_CONVENTIONS)
+    # Custom Euler angles override the preset when set (device -> world ENU):
+    yaw_deg: null
+    pitch_deg: null
+    roll_deg: null
+
+  calibration:
+    # True = enable estimation for the given sensor. Estimation requires fit
+    # inputs (diverse orientations for accel/mag, rest data for gyro) which the
+    # calibrate_dataset script obtains from dedicated windows; otherwise the
+    # pipeline falls back to an explicit configured-identity profile (copy-through).
+    accel: false
+    gyro: false
+    mag: false
+    # When true, auto-enables gyro calibration from a detected rest block at the
+    # start of each trip (zero-rate bias). If no rest block is found the gyro
+    # profile stays an explicit configured-identity (no correction applied).
+    estimate_gyro_bias_from_rest: true
+
+  output:
+    calibrated_root: "data/calibrated"
+    metadata_file: "calibration_metadata.json"
+
+sequence:
+  window_rows: 100          # fixed window length in samples (10 s at 10 Hz)
+  stride_rows: 100          # stride in samples (100 = non-overlapping)
+  drop_incomplete_tail: true
+  # Columns carried into each window frame (default = the full calibrated frame).
+  sensor_columns: null
+  # Reference/target fields forwarded per-window where available.
+  target_columns:
+    - speed_kmh           # GNSS speed (km/h) - kept as a window target/reference
+  output:
+    root: "data"                          # writes data/{train,validation,test}/sequences.parquet
+    metadata_file: "sequences_metadata.json"

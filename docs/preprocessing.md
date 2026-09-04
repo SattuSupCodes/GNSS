@@ -103,7 +103,15 @@ python scripts/synchronize_data.py --trip vw16b --offset 0.0   # opt-in manual o
 # Phase 2: calibrate + align + build leakage-safe window sequences
 python scripts/calibrate_dataset.py
 python scripts/generate_sequences.py
+
+# Phase 3: GNSS-denied blackout scenarios for evaluation (see docs/evaluation.md)
+python scripts/create_blackouts.py
 ```
+
+> **GNSS availability note:** step 7 (`ffill_gnss`) forward-fills the GNSS
+> fields from Phase 1, which is why processed/calibrated frames carry no native
+> GNSS-missingness indicator. Phase 3 introduces `gnss_available` on its
+> blackout outputs precisely to supply that indicator.
 
 Both scripts print row counts / coverage stats. Run `python -m pytest` from the
 repo root to validate (all tests use small synthetic fixtures; none require the

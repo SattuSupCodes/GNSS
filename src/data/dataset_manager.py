@@ -33,6 +33,10 @@ class DatasetManager:
     Phase 2 additions (calibration + sequences):
       dm.load_calibrated_trip(trip_id)      # calibrated/aligned frame (DataFrame)
       dm.load_split("train")                # long-format window frame (DataFrame)
+    Phase 3 additions (GNSS blackouts):
+      dm.list_blackout_scenarios()          # scenario ids under data/blackout
+      dm.load_blackout_scenario(id)         # masked frame (DataFrame)
+      dm.runtime_frame(df) / reference_frame(df)  # runtime vs offline separation
     """
 
     def __init__(
@@ -42,6 +46,7 @@ class DatasetManager:
         split_root: Optional[str] = None,
         calibrated_root: Optional[str] = None,
         sequences_root: Optional[str] = None,
+        blackout_root: Optional[str] = None,
     ):
         self.raw_root = Path(raw_root).expanduser().resolve()
         self.processed_root = Path(processed_root).expanduser().resolve()
@@ -60,6 +65,11 @@ class DatasetManager:
             Path(sequences_root).expanduser().resolve()
             if sequences_root
             else data_dir
+        )
+        self.blackout_root = (
+            Path(blackout_root).expanduser().resolve()
+            if blackout_root
+            else data_dir / "blackout"
         )
 
         self.dataset = IOVNBDDataset(str(self.raw_root))
@@ -193,6 +203,59 @@ class DatasetManager:
         from .sequence_generator import load_split_assignments
 
         return load_split_assignments(self.split_root)
+
+    # ------------------------------------------------------------------ #
+    # Blackout datasets (Phase 3)                                        #
+    # ------------------------------------------------------------------ #
+
+    def list_blackout_scenarios(self) -> List[str]:
+        """Scenario ids with parquet outputs under the blackout root."""
+        if not self.blackout_root.is_dir():
+            return []
+        return sorted(
+            p.stem
+            for p in self.blackout_root.rglob("*.parquet")
+            if not p.stem.endswith("_vehicle_reference")
+        )
+
+    def blackout_scenario_path(self, scenario_id: str) -> Optional[Path]:
+        if not self.blackout_root.is_dir():
+            return None
+        for p in self.blackout_root.rglob(f"{scenario_id}.parquet"):
+            return p
+        return None
+
+    def load_blackout_scenario(self, scenario_id: str) -> "pd.DataFrame":
+        """Load a blackout parquet; raises FileNotFoundError when unknown."""
+        path = self.blackout_scenario_path(scenario_id)
+        if path is None:
+            raise FileNotFoundError(
+                f"Blackout scenario '{scenario_id}' not found under {self.blackout_root}. "
+                "Run: python scripts/create_blackouts.py"
+            )
+        return pd.read_parquet(path)
+
+    def blackout_scenario_metadata(self, scenario_id: str) -> dict:
+        path = self.blackout_root / f"{scenario_id}_metadata.json"
+        candidates = list(self.blackout_root.rglob(f"{scenario_id}_metadata.json"))
+        if not candidates:
+            raise FileNotFoundError(
+                f"No metadata for blackout scenario '{scenario_id}'."
+            )
+        import json
+
+        return json.loads(candidates[0].read_text(encoding="utf-8"))
+
+    def runtime_frame(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Strip ``reference_*`` columns - the frame a runtime model receives."""
+        ref_cols = [c for c in df.columns if c.startswith("reference_")]
+        return df.drop(columns=ref_cols)
+
+    def reference_frame(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Offline reference columns only (evaluation/ground-truth, never runtime)."""
+        ref_cols = [c for c in df.columns if c.startswith("reference_")]
+        cols = ["timestamp"] + ref_cols
+        return df[[c for c in cols if c in df.columns]]
 
     # ------------------------------------------------------------------ #
     # Validation                                                         #

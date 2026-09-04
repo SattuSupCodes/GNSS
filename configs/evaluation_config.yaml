@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------- #
+# Phase 3 - GNSS blackout simulation configuration.                            #
+# Drives scripts/create_blackouts.py and src/simulation/*.                     #
+# Paths below are RELATIVE to the repository root (portable across machines).  #
+# ---------------------------------------------------------------------------- #
+
+blackout:
+  # Supported/required outage durations (seconds). Each production trip is given
+  # one blackout scenario per duration; a scenario is only produced when it can
+  # be realized on the trip's real timestamps (explicit error otherwise).
+  durations_s: [5, 10, 20, 30, 60, 120]
+
+  # Global seed -> every generated scenario is deterministic given this seed.
+  seed: 2024
+  # How many independent scenarios (different intervals) per trip+duration.
+  n_scenarios_per_duration: 1
+  # Number of outages to drop inside a single scenario.
+  n_intervals_per_scenario: 1
+
+  # Feasibility constraints (seconds, real timestamps).
+  min_trip_duration_s: 30         # trips shorter than this are skipped
+  min_pre_blackout_s: 5.0         # required GNSS before the first outage
+  min_post_blackout_s: 5.0        # required GNSS after the last outage
+  min_gap_between_blackouts_s: 0.0
+  allow_overlap: false            # intervals are disjoint unless explicitly enabled
+
+  # GNSS fields masked to NaN during an outage (runtime inputs only; IMU,
+  # calibrated/aligned values, timestamps, ids and reference fields are never
+  # touched - values outside an outage stay byte-identical).
+  mask_columns:
+    - latitude_deg
+    - longitude_deg
+    - altitude_m
+    - speed_kmh
+    - position_accuracy_m
+    - gps_heading_deg
+    - gps_satellites
+
+  # Explicit per-sample availability + phase annotations added to outputs.
+  availability_column: "gnss_available"     # bool: GT False only during outages
+  phase_column: "blackout_phase"            # pre_blackout|blackout|inter_blackout|post_blackout
+  blackout_id_column: "blackout_id"         # interval id or NaN
+
+reference:
+  # Offline ground-truth trajectory (vehicle reference), preserved but NEVER made
+  # available to the runtime model. Attached only when a synchronized reference
+  # file exists for the trip; otherwise reference_available is False.
+  attach_vehicle_reference: true
+  root: "data/processed/synchronized"
+  file_pattern: "trip_{trip_id}_vehicle_reference.parquet"
+  # canonical output column -> vehicle CSV column (raw vehicle headers preserved)
+  columns:
+    reference_latitude_deg: " Latitude (degrees)"
+    reference_longitude_deg: " Longitude (degrees)"
+    reference_speed_kmh: " Velocity (km/hr)"
+    reference_heading_deg: " Heading (degrees)"
+    reference_height_m: " Height (km)"
+  availability_column: "reference_available"
+  source_column: "reference_source"         # "vehicle" when attached, else "none"
+
+output:
+  format: "parquet"
+  root: "data/blackout"                     # gitignored; generated artifacts only
+  duration_subdir_pattern: "{duration_s}s"  # data/blackout/5s, 10s, ...
+  trip_file_pattern: "{scenario_id}.parquet"
+  metadata_file_pattern: "{scenario_id}_metadata.json"
+  index_file: "scenarios_index.json"        # global index of all produced scenarios
+
+input:
+  # Data source for blackout simulation. "calibrated" uses Phase 2 calibrated/
+  # aligned trips (data/calibrated), falling back to Phase 1 processed frames.
+  source: "calibrated"

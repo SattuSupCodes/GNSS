@@ -29,7 +29,7 @@ data/
 ├── training/         # Phase 2: fixed-length window sequences (per split)
 ├── validation/       # Phase 2: fixed-length window sequences (per split)
 ├── testing/          # Phase 2: fixed-length window sequences (per split)
-├── blackout/         # Synthetic GNSS blackout scenarios for evaluation (future)
+├── blackout/         # Phase 3: GNSS-denied blackout scenarios for evaluation
 └── maps/             # Road network data (OSM/Mapbox) for map matching (future)
 ```
 
@@ -50,6 +50,8 @@ Trip Parquerts (data/processed/trip_<id>.parquet)
 Calibrated trips (gravity_est/cal/orient/aligned) → data/calibrated/
     ↓  scripts/generate_sequences.py (Phase 2, split-aware)
 Fixed-length window sequences → data/{training,validation,testing}/
+    ↓  scripts/create_blackouts.py (Phase 3)
+GNSS-denied scenarios (GNSS masked, reference kept) → data/blackout/
     ↓
 Smartphone-only runtime input; vehicle used offline as ground truth
 ```
@@ -66,10 +68,12 @@ python scripts/prepare_dataset.py --all               # construct all 72
 python scripts/synchronize_data.py --trip vw16b        # S + aligned V reference
 python scripts/calibrate_dataset.py                    # Phase 2 calibration
 python scripts/generate_sequences.py                   # Phase 2 window sequences
+python scripts/create_blackouts.py                     # Phase 3 GNSS blackouts
 ```
 
-See `docs/preprocessing.md` for the full pipeline chain and sync semantics, and
-`docs/calibration.md` for the Phase 2 calibration + sequence layer.
+See `docs/preprocessing.md` for the full pipeline chain and sync semantics,
+`docs/calibration.md` for the Phase 2 calibration + sequence layer, and
+`docs/evaluation.md` for the Phase 3 GNSS-blackout simulation.
 
 ## Getting the Dataset (Step by Step)
 
@@ -166,5 +170,8 @@ After installing once, run `git lfs install` in the repo to enable the filter.
   (`unsynchronised`) recordings of the same trip id — they are distinct and
   **never merged**
 - Vehicle data is always reference-only (`is_reference=True`)
+- `data/blackout/` contains only generated artifacts (gitignored): `5s|10s|20s|
+  30s|60s|120s/` subdirs with one Parquet + one metadata JSON per scenario, plus
+  `scenarios_index.json`. Regenerate any time with `scripts/create_blackouts.py`
 - The full dataset is **not** committed to this repo (it is gitignored); each
   teammate downloads it locally using the steps above.

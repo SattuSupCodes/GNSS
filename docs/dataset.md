@@ -179,3 +179,18 @@ changing any Phase 1 file**:
   frames with sequence provenance columns, split along `data/splits/*.txt`.
 - Resource columns like `m (Driver B)`/`S (Driver A)`/`Y (Driver D)` folder names
   map to users via the synchronization/calibration stage instead of the loader.
+
+## 10. Phase 3 Outputs (GNSS blackout simulation)
+
+Phase 3 adds a derived, eval-only artifact **without changing any Phase 1/2 file**:
+
+- `data/blackout/<duration>s/<scenario_id>.parquet` — a calibrated trip whose GNSS
+  fields are masked to `NaN` inside one or more real-time outage windows, plus
+  `gnss_available` / `blackout_phase` / `blackout_id` annotations and offline
+  `reference_*` trajectory columns where a synchronized vehicle reference exists.
+- One `<scenario_id>_metadata.json` per scenario (spec + realized mask) and a
+  global `data/blackout/scenarios_index.json`.
+
+The schema gets no new GNSS-availability field: Phase 1 forward-fills GNSS, so
+the simulator itself defines the explicit `gnss_available` per-sample indicator
+(see `docs/evaluation.md` for the full contract).

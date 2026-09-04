@@ -20,38 +20,49 @@ This directory contains the complete data pipeline from raw downloads to model-r
 
 ```
 data/
-├── raw/              # Original IO-VNBD downloads (immutable)
-├── interim/          # Extracted smartphone streams, partial cleaning
-├── processed/        # Fully preprocessed, calibrated, synchronized data
-├── synchronized/     # Time-aligned multi-sensor streams per session
-├── training/         # Train splits (features + labels)
-├── validation/       # Validation splits
-├── testing/          # Held-out test splits
-├── blackout/         # Synthetic GNSS blackout scenarios for evaluation
-└── maps/             # Road network data (OSM/Mapbox) for map matching
+├── raw/              # Original IO-VNBD downloads (immutable, gitignored)
+├── processed/        # Preprocessed trip Parquets + fitted metadata
+│   └── trip_<id>.parquet
+├── processed/synchronized/   # Time-aligned S + V reference streams per trip
+├── splits/           # Trip-level train/validation/testing split lists
+├── blackout/         # Synthetic GNSS blackout scenarios for evaluation (future)
+└── maps/             # Road network data (OSM/Mapbox) for map matching (future)
 ```
+
+(`interim/`, `training/`, `validation/`, `testing/` data folders are not used;
+splits live as lists of trip ids in `splits/`.)
 
 ## Data Flow
 
 ```
-IO-VNBD Raw
+IO-VNBD Raw (data/raw/)
+    ↓  scripts/download_dataset.py  (Git LFS clone/verify)
+Smartphone extraction (src/data/: schema, loader, extractor)
+    ↓  scripts/prepare_dataset.py    (per trip)
+Cleaning, outlier removal, low-pass, uniform resample, z-score, ENU coords
+    ↓  (src/preprocessing/, configs/preprocessing_config.yaml)
+Trip Parquerts (data/processed/trip_<id>.parquet)
+    ↓  scripts/synchronize_data.py   (reference only)
+Synchronized smartphone + vehicle reference parquets (data/processed/synchronized/)
     ↓
-Smartphone Extraction (accel, gyro, mag, GNSS, timestamps)
+Trip-level train/val/testing split lists (data/splits/, no leakage)
     ↓
-Cleaning & Outlier Removal
-    ↓
-Resampling (common time base, e.g., 100 Hz)
-    ↓
-Coordinate Transform (phone → vehicle frame)
-    ↓
-Calibration (bias, scale, misalignment, gravity)
-    ↓
-Synchronization (sensor fusion ready streams)
-    ↓
-Train / Val / Test Split (by session, no leakage)
-    ↓
-Blackout Scenario Injection (for evaluation only)
+Smartphone-only runtime input; vehicle used offline as ground truth
 ```
+
+> Smartphone-only principle: the runtime model consumes **only** smartphone
+> sensors. Vehicle data is `is_reference=True` and used offline (labels,
+> evaluation, GNSS-blackout validation).
+
+## Processing a Trip
+
+```bash
+python scripts/prepare_dataset.py --trip vw16b        # construct one trip
+python scripts/prepare_dataset.py --all               # construct all 72
+python scripts/synchronize_data.py --trip vw16b        # S + aligned V reference
+```
+
+See `docs/preprocessing.md` for the full pipeline chain and sync semantics.
 
 ## Getting the Dataset (Step by Step)
 
@@ -139,8 +150,14 @@ After installing once, run `git lfs install` in the repo to enable the filter.
 ## Important Notes
 
 - Never commit raw or processed data to git (see `.gitignore`)
-- Use `.gitkeep` files to preserve directory structure
+- `data/processed/*.parquet` and `data/splits/*.txt` are build outputs — the
+  pipeline regenerates them from `data/raw/`
 - All preprocessing is configuration-driven via `configs/preprocessing_config.yaml`
-- Dataset splits are session-based to prevent temporal leakage
+- Dataset splits are **trip-level** (no row-level leakage): the 72 smartphone
+  trips split 50/11/11 into train/validation/testing
+- `sync_status` distinguishes the row-aligned (`synchronised`) and separate
+  (`unsynchronised`) recordings of the same trip id — they are distinct and
+  **never merged**
+- Vehicle data is always reference-only (`is_reference=True`)
 - The full dataset is **not** committed to this repo (it is gitignored); each
   teammate downloads it locally using the steps above.

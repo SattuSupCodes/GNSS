@@ -5,16 +5,18 @@ Git LFS. Git LFS only stores pointer files when downloaded without the LFS
 plugin, so it is essential to clone with Git LFS enabled. This script:
 
 1. Verifies / installs Git LFS.
-2. Clones the official repository (github.com/onyekpeu/IO-VNBD) into files/raw.
+2. Clones the official repository (github.com/onyekpeu/IO-VNBD) into
+   ``data/raw/IO-VNBD`` (matching the layout expected by the Phase 1 loaders).
 3. Verifies the download by checking that no remaining LFS pointer files exist.
 
 Usage:
-    python scripts/download_dataset.py               # clone to data/raw
+    python scripts/download_dataset.py               # clone to data/raw/IO-VNBD
     python scripts/download_dataset.py --target DIR  # clone to a custom dir
 
 Note:
     data/raw is gitignored, so the downloaded data is never committed to this
-    repository.
+    repository. If your working copy already has the dataset flattened directly
+    under ``data/raw``, the loaders support that layout too.
 """
 
 from __future__ import annotations
@@ -26,7 +28,9 @@ import sys
 from pathlib import Path
 
 REPO_URL = "https://github.com/onyekpeu/IO-VNBD.git"
-DEFAULT_TARGET = Path(__file__).resolve().parents[1] / "data" / "raw"
+DEFAULT_TARGET = (
+    Path(__file__).resolve().parents[1] / "data" / "raw" / "IO-VNBD"
+)
 
 # Smallest plausible real CSV size; real data files are tens-hundreds of KB.
 # Git LFS pointer files are only ~130 bytes, so anything at or below this

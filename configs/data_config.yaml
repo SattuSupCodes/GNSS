@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------- #
+# Phase 1 - Data configuration (dataset + IO-VNBD loader shared defaults).     #
+# Derived from inspection of the actual local dataset (docs/dataset.md).       #
+# ---------------------------------------------------------------------------- #
+
+dataset:
+  name: "IO-VNBD"
+  # Local raw root. All paths are RELATIVE to the repository root on purpose so
+  # the pipeline is portable across machines (no hard-coded Windows paths).
+  raw_root: "data/raw"
+  processed_root: "data/processed"
+  split_root: "data/splits"
+  sync_dir_name: "Synchronised V abd S datasets"
+  unsync_dir_name: "Unsynchronised V and S Dataset"
+
+  encoding: "cp1252"
+  lfs_pointer_max_bytes: 1000
+
+  # File classification prefixes inside IO-VNBD.
+  smartphone_prefix: "S-"
+  vehicle_prefix: "V-"
+
+  # Canonical column ordering used when writing parquet files.
+  canonical_columns:
+    - timestamp
+    - datetime
+    - time_since_start_ms
+    - accel_x
+    - accel_y
+    - accel_z
+    - gyro_x
+    - gyro_y
+    - gyro_z
+    - mag_x
+    - mag_y
+    - mag_z
+    - gravity_x
+    - gravity_y
+    - gravity_z
+    - orientation_azimuth_deg
+    - orientation_pitch_deg
+    - orientation_roll_deg
+    - latitude_deg
+    - longitude_deg
+    - altitude_m
+    - speed_kmh
+    - position_accuracy_m
+    - gps_heading_deg
+    - gps_satellites
+    - trip_id
+    - source_file
+    - sync_status
+
+output:
+  format: "parquet"  # preferred; pyarrow available in the project env
+  trip_file_pattern: "trip_{trip_id}.parquet"
+  metadata_file: "trips_metadata.json"
+
+split:
+  # Trip-level splits only; never split inside a trip.
+  ratios: [0.7, 0.15, 0.15]
+  shuffle: true
+  seed: 42
+  min_trips_per_split: 1
+  output_files:
+    train: "train_trips.txt"
+    validation: "validation_trips.txt"
+    test: "test_trips.txt"

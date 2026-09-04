@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------- #
+# Phase 1 - Preprocessing configuration.                                      #
+# Values are defaults that produced sane output on the real IO-VNBD data       #
+# (10 Hz smartphone sampling, 4 Hz low-pass, z-score normalization).           #
+# ---------------------------------------------------------------------------- #
+
+pipeline:
+  fs: 10.0                  # nominal smartphone rate (Hz) observed in the data
+  drop_na: true
+  dedupe: true
+  clamp_gnss: true
+  imu_spike_window: 15
+  imu_spike_sigma: 8.0
+  gnss_jump_kmh: 360.0      # rejects impossible fixes (>600 m/s)
+  lowpass_cutoff_hz: 4.0
+  filter_order: 4
+  apply_zscore: true
+  add_enu: true
+  ffill_gnss: true
+
+filtering:
+  lowpass:
+    butter_order: 4
+    cutoff_hz: 4.0
+  savgol:
+    window_length: 15
+    polyorder: 3
+  median:
+    window_length: 5
+
+normalization:
+  method: "zscore"          # zscore | minmax
+  columns_group: "imu"      # imu = accel+gyro+mag+gravity 9 axes
+
+synchronization:
+  cross_source_max_lag_seconds: 5.0
+  lag_resolution_seconds: 0.1
+  # Vehicle CAN frames are REFERENCE ONLY. Never merged into the smartphone
+  # runtime frame; offered separately for offline error evaluation.
+  reference_only: true
+
+resampling:
+  method: "uniform"         # uniform grid at fs
+  interp: "linear"
+  gnss_hold: true           # forward-fill sparse GNSS onto the grid
+
+outlier:
+  imu:
+    window: 15
+    threshold_sigma: 8.0
+  gnss:
+    max_speed_kmh: 360.0
+
+coordinate_transforms:
+  local_frame: "ENU"        # East-North-Up meters, origin = first GNSS fix
+  reference_ellipsoid: "WGS84"
+
+output:
+  suffix: "_processed.parquet"
+  write_metadata: true

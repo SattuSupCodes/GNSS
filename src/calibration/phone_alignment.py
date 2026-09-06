@@ -191,9 +191,10 @@ class PhoneAligner:
             raise ValueError(f"expected (n,3) vectors, got shape {v.shape}")
         out = np.empty_like(v)
         finite = np.isfinite(v).all(axis=1)
-        out[finite] = np.array(
-            [quat_rotate(self.transform_quat, row) for row in v[finite]]
-        )
+        if finite.any():
+            out[finite] = np.array(
+                [quat_rotate(self.transform_quat, row) for row in v[finite]]
+            )
         out[~finite] = np.nan
         return out[0] if v.shape[0] == 1 else out
 

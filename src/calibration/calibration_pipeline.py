@@ -221,7 +221,21 @@ class CalibrationPipeline:
             ("mag", ["mag_x", "mag_y", "mag_z"]),
         ):
             pre = set(out.columns)
-            out = apply_calibration(out, sensor, profiles[sensor], base_cols=base)
+
+            if all(c in out.columns for c in base):
+                out = apply_calibration(
+                    out,
+                    sensor,
+                    profiles[sensor],
+                    base_cols=base,
+                )
+            else:
+                # Sensor is unavailable for this trip.
+                # Create NaN calibrated columns so downstream code
+                # can continue without inventing sensor measurements.
+                for c in base:
+                    out[c + "_cal"] = np.nan
+
             added += [c for c in out.columns.difference(pre)]
 
         # --- 3. orientation estimation -------------------------------- #

@@ -14,7 +14,7 @@ Develop an AI/ML-enhanced Intelligent Dead Reckoning system that transforms a co
 
 ## Project Objective
 
-Build a production-ready **Intelligent Dead Reckoning Engine (IDREngine)** that:
+Build a production-ready **Intelligent Dead Reckoning Engine (IDREngine)** :
 
 1. Runs entirely on smartphone sensor streams (accelerometer, gyroscope, magnetometer, GNSS)
 2. Maintains navigation state during GNSS outages through learned inertial navigation

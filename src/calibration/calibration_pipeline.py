@@ -219,9 +219,18 @@ class CalibrationPipeline:
             ("accel", ["accel_x", "accel_y", "accel_z"]),
             ("gyro", ["gyro_x", "gyro_y", "gyro_z"]),
             ("mag", ["mag_x", "mag_y", "mag_z"]),
-        ):
+        ): # Some IO-VNBD trips do not contain every smartphone sensor.
+    # Missing sensors must remain unavailable; never fabricate values.
+            if not all(c in out.columns for c in base):
+                continue
+
             pre = set(out.columns)
-            out = apply_calibration(out, sensor, profiles[sensor], base_cols=base)
+            out = apply_calibration(
+                out,
+                sensor,
+                profiles[sensor],
+                base_cols=base,
+            )
             added += [c for c in out.columns.difference(pre)]
 
         # --- 3. orientation estimation -------------------------------- #
@@ -235,11 +244,15 @@ class CalibrationPipeline:
             if all(c + "_cal" in out.columns for c in ("gyro_x", "gyro_y", "gyro_z"))
             else ["gyro_x", "gyro_y", "gyro_z"]
         )
-        mag_cols = (
-            [c + "_cal" for c in ("mag_x", "mag_y", "mag_z")]
-            if all(c + "_cal" in out.columns for c in ("mag_x", "mag_y", "mag_z"))
-            else ["mag_x", "mag_y", "mag_z"]
-        )
+        mag_base = (
+            "mag_x", "mag_y", "mag_z"
+        ) 
+        if all(f"{c}_cal" in out.columns for c in mag_base):
+            mag_cols = [f"{c}_cal" for c in mag_base]
+        elif all(c in out.columns for c in mag_base):
+            mag_cols = list(mag_base)
+        else:
+            mag_cols = None
         accel_cols = ["accel_x", "accel_y", "accel_z"]
         orient_res = orient.estimate(
             out,
@@ -257,16 +270,38 @@ class CalibrationPipeline:
         aligner = PhoneAligner(convention)
         aligned_from: List[str] = []
         for base in ("accel", "gyro", "mag"):
-            cal_names = [f"{base}_x_cal", f"{base}_y_cal", f"{base}_z_cal"]
-            raw_names = [f"{base}_x", f"{base}_y", f"{base}_z"]
-            src = cal_names if all(c in out.columns for c in cal_names) else raw_names
+            cal_names = [
+                f"{base}_x_cal",
+                f"{base}_y_cal",
+                f"{base}_z_cal",
+            ]
+            raw_names = [
+                f"{base}_x",
+                f"{base}_y",
+                f"{base}_z",
+            ]
+
+            if all(c in out.columns for c in cal_names):
+                src = cal_names
+            elif all(c in out.columns for c in raw_names):
+                src = raw_names
+            else:
+                # Sensor is genuinely unavailable for this trip.
+                continue
+
             raw = np.column_stack(
-                [pd.to_numeric(out[c], errors="coerce").to_numpy() for c in src]
+                [
+                    pd.to_numeric(out[c], errors="coerce").to_numpy()
+                    for c in src
+                ]
             )
+
             aligned = aligner.align_vectors(raw)
+
             for axis, comp in zip("xyz", range(3)):
                 out[f"{base}_{axis}{ALIGNED_SUFFIX}"] = aligned[:, comp]
                 added.append(f"{base}_{axis}{ALIGNED_SUFFIX}")
+
             aligned_from.extend(src)
         align_meta = aligner.metadata
         align_meta = dict(align_meta)

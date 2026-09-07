@@ -330,35 +330,59 @@ def _remap_columns(df: pd.DataFrame, path: Path) -> pd.DataFrame:
 
 
 def _attach_timestamps(df: pd.DataFrame, path: Path) -> pd.DataFrame:
-    """Parse the raw date string + ms-since-start into canonical time columns.
+    """Parse raw date string + ms-since-start into canonical time columns.
 
-    The source date column looks like ``2020-01-08 17:42:16:002`` (a ':' before
-    the milliseconds). We convert the final ':xxx' to '.xxx' and parse with
-    pandas. Also adds ms-since-start if present. Returns a copy with new
-    columns.
+    ``timestamp`` is always POSIX seconds, independent of pandas' internal
+    datetime resolution.
     """
     out = df.copy()
+
     if "raw_date_str" in out.columns:
         raw = out["raw_date_str"].astype(str).str.strip()
-        fixed = raw.str.replace(r":(\d{3})$", r".\1", regex=True)
-        dt = pd.to_datetime(fixed, format="%Y-%m-%d %H:%M:%S.%f", errors="coerce")
+
+        # Source sometimes uses ':' before milliseconds:
+        # 2020-01-08 17:42:16:002
+        fixed = raw.str.replace(
+            r":(\d{3})$",
+            r".\1",
+            regex=True,
+        )
+
+        dt = pd.to_datetime(
+            fixed,
+            format="%Y-%m-%d %H:%M:%S.%f",
+            errors="coerce",
+        )
+
         out[DATETIME] = dt
-        # POSIX epoch seconds
-        out[TS_SEC] = dt.astype("int64", errors="ignore").astype(float) / 1e9
+
+        # Convert datetime to POSIX seconds without assuming whether
+        # pandas stores the datetime internally as ns/us/ms/s.
+        epoch = pd.Timestamp("1970-01-01")
+
+        out[TS_SEC] = (
+            (dt - epoch) / pd.Timedelta(seconds=1)
+        ).astype(float)
+
     else:
-        # No date column: try ms-since-start as the primary time if present,
-        # else leave timestamp as NaN (all-NaN column is created for schema
-        # consistency).
+        # No date column: use ms-since-start as the primary time if present.
         if MS_SINCE_START in out.columns:
-            out[TS_SEC] = pd.to_numeric(out[MS_SINCE_START], errors="coerce") / 1000.0
+            out[TS_SEC] = (
+                pd.to_numeric(
+                    out[MS_SINCE_START],
+                    errors="coerce",
+                ) / 1000.0
+            )
         else:
             out[TS_SEC] = float("nan")
+
     if MS_SINCE_START not in out.columns:
         out[MS_SINCE_START] = float("nan")
+
     if DATETIME not in out.columns:
         out[DATETIME] = pd.NaT
-    return out
 
+    return out
 
 def _coerce_sensor_dtypes(df: pd.DataFrame, path: Path) -> pd.DataFrame:
     """Force canonical sensor/gnss columns to float.
@@ -376,9 +400,15 @@ def _coerce_sensor_dtypes(df: pd.DataFrame, path: Path) -> pd.DataFrame:
         out["gps_satellites"] = pd.to_numeric(num, errors="coerce").astype(float)
     numeric_cols = [
         c
-        for c in out.columns
-        if c
-        not in ("raw_date_str", TRIP_ID, SOURCE_FILE, "is_reference", SYNC_STATUS)
+    for c in out.columns
+    if c not in (
+        "raw_date_str",
+        DATETIME,
+        TRIP_ID,
+        SOURCE_FILE,
+        "is_reference",
+        SYNC_STATUS,
+    )
     ]
     for c in numeric_cols:
         out[c] = pd.to_numeric(out[c], errors="coerce").astype(float)

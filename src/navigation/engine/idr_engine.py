@@ -1,128 +1,258 @@
+"""IDREngine - public navigation backend facade (D-S11).
+
+The engine consumes sensor-sample messages and optional ML outputs
+(``navigation/interfaces/messages.py``) and produces a ``NavigationState``
+with position, velocity, heading, mode and confidence, plus a JSON-style
+dict via ``get_state_dict()``.
+
+Owns:
+    * ``GNSSINSFusion``    (filter + GNSS health + ENU origin)  [D-S3..D-S6]
+    * ``MapMatcher``       (road network constraints)           [D-S8]
+    * ``ConfidenceEstimator``                                    [D-S10]
+    * an optional ``MLInference``                               [D-S7]
+"""
+
+from __future__ import annotations
+
 import math
-from navigation.interfaces.messages import IMUSample, GNSSSample, MLNavigationOutput, NavigationState
-from navigation.core.math_utils import LocalENU, heading_from_velocity
-from navigation.ins.orientation import OrientationEstimator
-from navigation.fusion.ekf import EKF
-from navigation.health.gnss_health import GNSSHealthMonitor, GNSSMode
-from navigation.constraints.non_holonomic import NonHolonomicConstraint
-from navigation.map_matching.map_matcher import MapMatcher
-from navigation.confidence.confidence import ConfidenceEstimator
+
+from src.navigation.core.math_utils import LocalENU
+from src.navigation.core.sensor_transform import phone_to_navigation_2d
+from src.navigation.interfaces.messages import (
+    GNSSSample,
+    IMUSample,
+    MLNavigationOutput,
+    NavigationState,
+)
+from src.navigation.ins.orientation import OrientationEstimator
+from src.navigation.fusion.ekf import EKF
+from src.navigation.fusion.gnss_ins_fusion import GNSSINSFusion
+from src.navigation.health.gnss_health import GNSSHealthMonitor, GNSSMode
+from src.navigation.constraints.non_holonomic import NonHolonomicConstraint
+from src.navigation.map_matching.map_matcher import MapMatcher
+from src.navigation.confidence.confidence import ConfidenceEstimator
+from src.navigation.engine.model_interface import FallbackMLInference, MLInference
+
+HEADING_STD_RAD = 0.3
+
 
 class IDREngine:
     """Public facade for the Phase 1 intelligent dead-reckoning backend."""
-    def __init__(self, health=None, ekf=None, map_matcher=None, confidence=None, constraints=None):
-        self.health = health or GNSSHealthMonitor()
-        self.ekf = ekf or EKF()
+
+    def __init__(
+        self,
+        fusion: GNSSINSFusion | None = None,
+        map_matcher: MapMatcher | None = None,
+        confidence: ConfidenceEstimator | None = None,
+        constraints: NonHolonomicConstraint | None = None,
+        ml_inference: MLInference | None = None,
+        map_match_std_m: float = 3.0,
+    ):
+        self.fusion = fusion or GNSSINSFusion()
         self.map_matcher = map_matcher or MapMatcher()
         self.confidence = confidence or ConfidenceEstimator()
         self.constraints = constraints or NonHolonomicConstraint()
+        self.ml_inference = ml_inference or FallbackMLInference()
+        self.map_match_std_m = float(map_match_std_m)
+
         self.orientation = OrientationEstimator()
-        self.origin: LocalENU | None = None
+        self.initialized = False
+        self.last_imu_timestamp: float | None = None
+        self.last_gnss_timestamp: float | None = None
+        self.mode = "UNINITIALIZED"
+        self._state = NavigationState()
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+
+    def reset(self) -> None:
+        self.fusion.reset()
         self.initialized = False
         self.last_imu_timestamp = None
         self.last_gnss_timestamp = None
         self.mode = "UNINITIALIZED"
         self._state = NavigationState()
 
-    def initialize(self, latitude=None, longitude=None, heading_rad=0.0):
-        if latitude is not None and longitude is not None:
-            self.origin = LocalENU(latitude, longitude)
-        self.ekf.initialize(0.0, 0.0, heading_rad)
+    def initialize(
+        self,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        heading_rad: float = 0.0,
+    ) -> "NavigationState":
+        self.fusion.initialize(latitude, longitude, heading_rad)
         self.initialized = True
         self.mode = "DEAD_RECKONING"
-        self._refresh_state(0.0)
+        self._refresh_state(self.last_imu_timestamp or 0.0)
+        return self.get_state()
 
-    def _ensure_initialized(self, gnss=None):
+    def _ensure_initialized(self, gnss: GNSSSample | None = None) -> None:
         if self.initialized:
             return
         if gnss is not None:
-            self.initialize(gnss.latitude, gnss.longitude, gnss.heading or 0.0)
+            self.fusion.initialize(
+                gnss.latitude, gnss.longitude, gnss.heading or 0.0
+            )
         else:
-            self.initialize()
+            self.fusion.initialize()
+        self.initialized = True
 
-    def update_imu(self, sample: IMUSample):
+    # ------------------------------------------------------------------ #
+    # Runtime updates
+    # ------------------------------------------------------------------ #
+
+    def update_imu(self, sample: IMUSample) -> "NavigationState":
         self._ensure_initialized()
+
         if self.last_imu_timestamp is None:
             dt = 0.0
         else:
             dt = sample.timestamp - self.last_imu_timestamp
         self.last_imu_timestamp = sample.timestamp
-        if dt <= 0.0:
-            return self.get_state()
 
-        if sample.heading_rad is not None:
-            heading = sample.heading_rad
-        else:
-            heading = self.orientation.update(sample.gyroscope[2], sample.magnetometer, dt)
+        if dt > 0.0:
+            gyro_z = float(sample.gyroscope[2])
 
-        # Preferred: Aaqib's calibrated world-frame linear acceleration.
-        if sample.linear_acceleration_enu is not None:
-            accel_enu = sample.linear_acceleration_enu
-        else:
-            # Minimal fallback: treat x/y body acceleration as ENU after yaw rotation.
-            # For production use, preprocessing/calibration should provide the ENU field.
-            ax, ay, az = sample.accelerometer
-            import numpy as np
-            c, s = math.cos(heading), math.sin(heading)
-            accel_enu = (c * ax - s * ay, s * ax + c * ay)
+            # Optional external compass heading (e.g. from magnetometer or
+            # upstream preprocessing) is applied as a measurement first.
+            if sample.heading_rad is not None:
+                self.fusion.filter.update_heading(
+                    float(sample.heading_rad), HEADING_STD_RAD
+                )
 
-        self.ekf.predict(accel_enu, sample.gyroscope[2], dt)
-        if self.health.mode in (GNSSMode.UNAVAILABLE, GNSSMode.RECOVERING):
-            self.mode = "DEAD_RECKONING"
-        elif self.health.mode == GNSSMode.DEGRADED:
-            self.mode = "GNSS_INS_DEGRADED"
-        else:
-            self.mode = "GNSS_INS_FUSION"
+            if sample.linear_acceleration_enu is not None:
+                accel_enu = sample.linear_acceleration_enu
+            else:
+                heading = self.fusion.filter.heading_rad
+                ax, ay = sample.accelerometer[0], sample.accelerometer[1]
+                accel_enu = phone_to_navigation_2d(ax, ay, heading)
+
+            self.mode = self.fusion.predict_imu(
+                accel_enu, gyro_z, dt, timestamp=sample.timestamp
+            )
+
         self._refresh_state(sample.timestamp)
         return self.get_state()
 
-    def update_gnss(self, sample: GNSSSample):
+    def update_gnss(self, sample: GNSSSample) -> "NavigationState":
         self._ensure_initialized(sample)
-        if self.origin is None:
-            self.origin = LocalENU(sample.latitude, sample.longitude)
-        east, north = self.origin.to_xy(sample.latitude, sample.longitude)
-        predicted = self.ekf.x[:2]
-        innovation_m = math.hypot(east - predicted[0], north - predicted[1])
-        health = self.health.update(sample.accuracy, sample.timestamp, innovation_m)
-        # Even degraded GNSS can be useful; unavailable/jump measurements are rejected.
-        if health != GNSSMode.UNAVAILABLE:
-            self.ekf.update_gnss_position(east, north, sample.accuracy)
-            if sample.speed is not None:
-                self.ekf.update_speed(sample.speed, max(sample.accuracy * 0.1, 0.5))
-            if sample.heading is not None and sample.speed is not None and sample.speed > 1.0:
-                self.ekf.update_heading(sample.heading, 0.35 if health == GNSSMode.DEGRADED else 0.2)
+
+        self.mode, _accepted, _innovation = self.fusion.update_gnss(
+            latitude=sample.latitude,
+            longitude=sample.longitude,
+            accuracy=sample.accuracy,
+            timestamp=sample.timestamp,
+            speed=sample.speed,
+            heading=sample.heading,
+        )
         self.last_gnss_timestamp = sample.timestamp
-        self.mode = {
-            GNSSMode.HEALTHY: "GNSS_INS_FUSION",
-            GNSSMode.DEGRADED: "GNSS_INS_DEGRADED",
-            GNSSMode.RECOVERING: "RECOVERING",
-            GNSSMode.UNAVAILABLE: "DEAD_RECKONING",
-        }[health]
+
         self._refresh_state(sample.timestamp)
         return self.get_state()
 
-    def update_ml(self, output: MLNavigationOutput):
+    def update_ml(self, output: MLNavigationOutput) -> "NavigationState":
+        """Feed Tanishk's ML outputs (D-S7) into the filter."""
         self._ensure_initialized()
-        if output.speed_mps is not None:
-            self.ekf.update_speed(output.speed_mps, output.speed_std_mps or 1.0)
-        if output.heading_rad is not None:
-            self.ekf.update_heading(output.heading_rad, output.heading_std_rad or 0.35)
+        self.fusion.update_ml(
+            speed_mps=output.speed_mps,
+            speed_std_mps=output.speed_std_mps,
+            heading_rad=output.heading_rad,
+            heading_std_rad=output.heading_std_rad,
+            accel_correction_enu=output.accel_correction_enu,
+        )
         self._refresh_state(output.timestamp)
         return self.get_state()
 
-    def apply_non_holonomic_constraint(self):
-        self.constraints.apply(self.ekf, self.ekf.x[4])
+    # ------------------------------------------------------------------ #
+    # Constraints & map matching
+    # ------------------------------------------------------------------ #
+
+    def apply_non_holonomic_constraint(self) -> "NavigationState":
+        self.fusion.apply_lateral_constraint()
         self._refresh_state(self._state.timestamp)
         return self.get_state()
+
+    def apply_zupt(self) -> "NavigationState":
+        self.fusion.apply_zupt()
+        self._refresh_state(self._state.timestamp)
+        return self.get_state()
+
+    def update_map_match(
+        self,
+        candidates=None,
+        std_m: float | None = None,
+    ) -> "NavigationState":
+        """Correct the solution using the nearest plausible road.
+
+        ``candidates`` are optional ``RoadCandidate`` instances; when omitted
+        the configured ``MapMatcher`` generates them from its road graph.
+        """
+        matched = self.map_matcher.match(
+            self._state.east_m,
+            self._state.north_m,
+            self._state.heading_rad,
+            candidates,
+        )
+        if matched is not None:
+            self.fusion.re_localize(
+                matched.east_m,
+                matched.north_m,
+                std_m if std_m is not None else self.map_match_std_m,
+            )
+        self._refresh_state(self._state.timestamp)
+        return self.get_state()
+
+    def update_ml_and_fuse(
+        self,
+        output: MLNavigationOutput,
+        sample: IMUSample | None = None,
+    ) -> "NavigationState":
+        """Convenience: apply ML corrections then a map-matched update."""
+        self.update_ml(output)
+        if sample is not None:
+            self.update_imu(sample)
+        if self.map_matcher is not None:
+            self.update_map_match()
+        return self.get_state()
+
+    # ------------------------------------------------------------------ #
+    # Output
+    # ------------------------------------------------------------------ #
 
     def get_state(self) -> NavigationState:
         return self._state
 
-    def _refresh_state(self, timestamp):
-        s = self.ekf.to_state(timestamp)
-        if self.origin is not None:
-            s.latitude, s.longitude = self.origin.to_ll(s.east_m, s.north_m)
-        s.position_error_m = self.ekf.position_std_m
-        s.confidence = self.confidence.estimate(s.position_error_m, self.mode)
+    def get_state_dict(self) -> dict:
+        """JSON-style state per the D-S11 engine API spec."""
+        s = self._state
+        return {
+            "timestamp": float(s.timestamp),
+            "latitude": s.latitude,
+            "longitude": s.longitude,
+            "velocity": float(
+                math.hypot(s.velocity_east_mps, s.velocity_north_mps)
+            ),
+            "heading": float(s.heading_rad),
+            "confidence": float(s.confidence),
+            "position_error": float(s.position_error_m),
+            "mode": str(s.mode),
+            "east_m": float(s.east_m),
+            "north_m": float(s.north_m),
+            "velocity_east_mps": float(s.velocity_east_mps),
+            "velocity_north_mps": float(s.velocity_north_mps),
+        }
+
+    def _refresh_state(self, timestamp: float) -> None:
+        s = self.fusion.to_state(timestamp)
+        s.position_error_m = self.fusion.filter.position_std_m
+        s.confidence = self.confidence.estimate(
+            s.position_error_m,
+            self.mode,
+            gnss_age_s=self.fusion.gnss_age(timestamp),
+        )
         s.mode = self.mode
         self._state = s
+
+    @property
+    def state(self) -> NavigationState:
+        return self._state

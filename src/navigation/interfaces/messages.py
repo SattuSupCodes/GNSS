@@ -11,39 +11,35 @@ class IMUSample:
     """
     One smartphone IMU sample.
 
-    Coordinate convention
-    ---------------------
-    Raw accelerometer and gyroscope values are in the smartphone frame.
+    The generic accelerometer/gyroscope/magnetometer fields retain the
+    sensor-frame measurements.
 
-    We assume the phone is mounted aligned with the vehicle, so the
-    phone-to-vehicle transformation is fixed rather than continuously
-    estimated.
+    `linear_acceleration_enu`, when supplied, is the preferred input
+    for navigation because it is:
+        - gravity compensated
+        - transformed into ENU
+        - expressed in m/s^2
 
-    Units:
-        accelerometer: m/s^2
-        gyroscope: rad/s
-        magnetometer: arbitrary sensor units
-        timestamp: seconds
+    Heading convention:
+        0       = North
+        +pi/2   = East
+        pi      = South
+        -pi/2   = West
+
+    Timestamp:
+        seconds
     """
 
     timestamp: float
 
     accelerometer: Vec3
     gyroscope: Vec3
-
     magnetometer: Optional[Vec3] = None
 
-    # Preferred input from preprocessing.
-    # If supplied, this should already be gravity-compensated and expressed
-    # in the local ENU navigation frame.
+    # Preferred navigation acceleration.
     linear_acceleration_enu: Optional[Vec2] = None
 
-    # Optional externally estimated heading.
-    # Convention:
-    #   0 rad   = North
-    #   pi/2    = East
-    #   pi      = South
-    #   -pi/2   = West
+    # Optional externally supplied heading.
     heading_rad: Optional[float] = None
 
 
@@ -56,13 +52,13 @@ class GNSSSample:
         degrees
 
     accuracy:
-        reported horizontal position accuracy in metres
+        horizontal position accuracy in metres
 
     speed:
         m/s, if available
 
     heading:
-        radians, if available
+        radians, clockwise from North, if available
     """
 
     timestamp: float
@@ -77,25 +73,10 @@ class GNSSSample:
 @dataclass(frozen=True)
 class MLNavigationOutput:
     """
-    Interface between the ML team and the navigation backend.
+    Interface between the ML team and navigation backend.
 
-    Tanishk's models can change internally without requiring changes to
-    the navigation engine.
-
-    speed_mps:
-        estimated vehicle speed
-
-    speed_std_mps:
-        estimated standard deviation of the speed prediction
-
-    heading_rad:
-        optional learned heading
-
-    heading_std_rad:
-        uncertainty of learned heading
-
-    accel_correction_enu:
-        optional learned correction to ENU acceleration
+    ML models may change internally without requiring changes to the
+    navigation engine.
     """
 
     timestamp: float
@@ -123,19 +104,19 @@ class NavigationState:
     Heading:
         radians, clockwise from North
 
-    Bias states:
-        estimated sensor biases
+    Biases:
+        gyro yaw bias and horizontal acceleration biases
 
-    Output position:
+    Geographic output:
         latitude / longitude
 
     Uncertainty:
         position_error_m
 
-    confidence:
+    Confidence:
         [0, 1]
 
-    mode:
+    Mode:
         current navigation mode
     """
 
@@ -152,10 +133,10 @@ class NavigationState:
     # Heading, clockwise from North.
     heading_rad: float = 0.0
 
-    # Estimated gyro bias.
+    # Estimated yaw-axis gyro bias.
     gyro_bias_radps: float = 0.0
 
-    # Estimated acceleration biases.
+    # Horizontal acceleration biases.
     accel_bias_east_mps2: float = 0.0
     accel_bias_north_mps2: float = 0.0
 

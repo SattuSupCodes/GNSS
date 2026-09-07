@@ -1,106 +1,230 @@
-import math
-import numpy as np
-from navigation.core.math_utils import wrap_angle
-from navigation.interfaces.messages import NavigationState
+"""Extended Kalman Filter for the 2-D navigation state.
 
-N = 8
+State (see ``fusion/state_model.py``):
+
+    x = [east, north, v_east, v_north, heading, gyro_bias,
+         accel_bias_east, accel_bias_north]
+
+Heading is the compass bearing clockwise from North (0 = North, +pi/2 = East).
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+from src.navigation.core.math_utils import wrap_angle
+from src.navigation.fusion.state_model import (
+    ANGLE_INDICES,
+    IDX_HEADING,
+    STATE_SIZE,
+    default_covariance,
+    motion_model,
+    process_noise,
+    wrap_state_angles,
+)
+from src.navigation.interfaces.messages import NavigationState
+
 
 class EKF:
-    """Extended Kalman filter for the 2-D navigation state.
+    """A minimal, auditable extended Kalman filter for 2-D dead reckoning."""
 
-    x = [east, north, v_east, v_north, heading, gyro_bias, accel_bias_e, accel_bias_n]
-    """
     def __init__(self):
-        self.x = np.zeros(N, dtype=float)
-        self.P = np.diag([25.0, 25.0, 4.0, 4.0, 0.25, 0.03**2, 0.5**2, 0.5**2])
+        self.x = np.zeros(STATE_SIZE, dtype=float)
+        self.P = default_covariance()
         self.initialized = False
 
-    def initialize(self, east=0.0, north=0.0, heading=0.0):
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+
+    def reset(self) -> None:
+        self.x = np.zeros(STATE_SIZE, dtype=float)
+        self.P = default_covariance()
+        self.initialized = False
+
+    def initialize(
+        self,
+        east: float = 0.0,
+        north: float = 0.0,
+        heading: float = 0.0,
+    ) -> None:
         self.x[:] = 0.0
         self.x[0], self.x[1], self.x[4] = east, north, heading
+        wrap_state_angles(self.x)
         self.initialized = True
 
-    def _f(self, x, accel_enu, gyro_z, dt):
-        y = x.copy()
-        ae = accel_enu[0] - x[6]
-        an = accel_enu[1] - x[7]
-        omega = gyro_z - x[5]
-        y[0] = x[0] + x[2] * dt + 0.5 * ae * dt * dt
-        y[1] = x[1] + x[3] * dt + 0.5 * an * dt * dt
-        y[2] = x[2] + ae * dt
-        y[3] = x[3] + an * dt
-        y[4] = wrap_angle(x[4] + omega * dt)
-        return y
+    def copy(self) -> "EKF":
+        other = EKF()
+        other.x = self.x.copy()
+        other.P = self.P.copy()
+        other.initialized = self.initialized
+        return other
 
-    def predict(self, accel_enu, gyro_z, dt):
+    # ------------------------------------------------------------------ #
+    # Prediction
+    # ------------------------------------------------------------------ #
+
+    def predict(
+        self,
+        accel_enu,
+        gyro_z: float,
+        dt: float,
+    ) -> None:
         if not self.initialized or dt <= 0.0 or dt > 1.0:
             return
+
         old = self.x.copy()
-        self.x = self._f(old, accel_enu, gyro_z, dt)
-        # Numerical Jacobian keeps the first implementation easy to audit/modify.
-        F = np.zeros((N, N))
+        self.x = motion_model(old, accel_enu, gyro_z, dt)
+        wrap_state_angles(self.x)
+
+        # Numerical Jacobian keeps the implementation easy to audit/modify.
+        F = np.zeros((STATE_SIZE, STATE_SIZE))
         eps = 1e-6
-        for i in range(N):
-            xp = old.copy(); xm = old.copy()
-            xp[i] += eps; xm[i] -= eps
-            F[:, i] = (self._f(xp, accel_enu, gyro_z, dt) - self._f(xm, accel_enu, gyro_z, dt)) / (2 * eps)
-        q = np.diag([
-            0.01**2, 0.01**2,
-            0.25**2, 0.25**2,
-            0.02**2, 0.0005**2,
-            0.01**2, 0.01**2,
-        ]) * max(dt, 1e-3)
-        self.P = F @ self.P @ F.T + q
+        for i in range(STATE_SIZE):
+            xp = old.copy()
+            xm = old.copy()
+            xp[i] += eps
+            xm[i] -= eps
+            F[:, i] = (
+                motion_model(xp, accel_enu, gyro_z, dt)
+                - motion_model(xm, accel_enu, gyro_z, dt)
+            ) / (2 * eps)
+
+        self.P = F @ self.P @ F.T + process_noise(dt)
         self.P = 0.5 * (self.P + self.P.T)
 
-    def _update(self, z, h, H, R, angle_indices=()):
-        innovation = np.asarray(z, dtype=float) - np.asarray(h, dtype=float)
+    # ------------------------------------------------------------------ #
+    # Measurement updates
+    # ------------------------------------------------------------------ #
+
+    def _update(
+        self,
+        z,
+        h,
+        H,
+        R,
+        angle_indices=(),
+    ):
+        z = np.asarray(z, dtype=float)
+        h = np.asarray(h, dtype=float)
+
+        innovation = z - h
         for i in angle_indices:
             innovation[i] = wrap_angle(float(innovation[i]))
+
         S = H @ self.P @ H.T + R
+        S = 0.5 * (S + S.T)
         K = self.P @ H.T @ np.linalg.pinv(S)
+
         self.x = self.x + K @ innovation
-        self.x[4] = wrap_angle(self.x[4])
-        I = np.eye(N)
+        wrap_state_angles(self.x)
+
+        I = np.eye(STATE_SIZE)
         # Joseph form is numerically safer than (I-KH)P.
         self.P = (I - K @ H) @ self.P @ (I - K @ H).T + K @ R @ K.T
         self.P = 0.5 * (self.P + self.P.T)
 
-    def update_gnss_position(self, east, north, accuracy_m):
-        H = np.zeros((2, N)); H[0,0] = 1.0; H[1,1] = 1.0
-        sigma = max(float(accuracy_m), 1.0)
-        self._update([east, north], [self.x[0], self.x[1]], H, np.eye(2) * sigma**2)
+    def update_linear(
+        self,
+        H,
+        z,
+        R,
+        angle_indices=(),
+    ) -> None:
+        """Apply a linear pseudo-measurement ``z = H x + noise``."""
+        if not self.initialized:
+            return
+        H = np.asarray(H, dtype=float)
+        self._update(z, H @ self.x, H, R, angle_indices)
 
-    def update_speed(self, speed_mps, std_mps=1.0):
+    def update_gnss_position(
+        self,
+        east: float,
+        north: float,
+        accuracy_m: float,
+    ) -> None:
+        H = np.zeros((2, STATE_SIZE))
+        H[0, 0] = 1.0
+        H[1, 1] = 1.0
+        sigma = max(float(accuracy_m), 1.0)
+        self._update([east, north], [self.x[0], self.x[1]], H, np.eye(2) * sigma ** 2)
+
+    def update_speed(
+        self,
+        speed_mps: float,
+        std_mps: float = 1.0,
+    ) -> None:
         speed = max(float(speed_mps), 0.0)
         v = self.x[2:4]
         norm = float(np.linalg.norm(v))
+        R = np.array([[max(float(std_mps), 0.1) ** 2]])
+
         if norm < 1e-4:
-            # Speed = ||v|| has zero gradient at rest. Use the current heading as the
-            # temporary direction so an AI speed measurement can initialize velocity.
-            h = [0.0]
-            H = np.zeros((1, N))
-            H[0,2] = math.sin(self.x[4])
-            H[0,3] = math.cos(self.x[4])
-            self._update([speed], h, H, np.array([[max(float(std_mps), 0.1)**2]]))
+            # Speed = ||v|| has zero gradient at rest. Use the current heading
+            # as a temporary direction so an AI/GNSS speed measurement can
+            # initialize velocity from a standstill.
+            H = np.zeros((1, STATE_SIZE))
+            H[0, 2] = math.sin(self.x[IDX_HEADING])
+            H[0, 3] = math.cos(self.x[IDX_HEADING])
+            self._update([speed], [0.0], H, R)
         else:
-            h = [norm]
-            H = np.zeros((1, N)); H[0,2] = v[0]/norm; H[0,3] = v[1]/norm
-            self._update([speed], h, H, np.array([[max(float(std_mps), 0.1)**2]]))
+            H = np.zeros((1, STATE_SIZE))
+            H[0, 2] = v[0] / norm
+            H[0, 3] = v[1] / norm
+            self._update([speed], [norm], H, R)
 
-    def update_heading(self, heading_rad, std_rad=0.25):
-        H = np.zeros((1, N)); H[0,4] = 1.0
-        self._update([heading_rad], [self.x[4]], H, np.array([[max(float(std_rad), 0.01)**2]]), angle_indices=(0,))
+    def update_heading(
+        self,
+        heading_rad: float,
+        std_rad: float = 0.25,
+    ) -> None:
+        H = np.zeros((1, STATE_SIZE))
+        H[0, IDX_HEADING] = 1.0
+        R = np.array([[max(float(std_rad), 0.01) ** 2]])
+        self._update([heading_rad], [self.x[IDX_HEADING]], H, R, angle_indices=(0,))
 
-    def to_state(self, timestamp=0.0):
+    def update_accel_correction(
+        self,
+        correction_enu,
+        std_mps2: float = 1.0,
+    ) -> None:
+        """Apply an AI/ML accel-error estimate as a pseudo-measurement on the
+        horizontal acceleration biases.
+        """
+        H = np.zeros((2, STATE_SIZE))
+        H[0, 6] = 1.0
+        H[1, 7] = 1.0
+        z = [correction_enu[0], correction_enu[1]]
+        h = [self.x[6], self.x[7]]
+        self._update(z, h, H, np.eye(2) * max(float(std_mps2), 0.01) ** 2)
+
+    # ------------------------------------------------------------------ #
+    # Output
+    # ------------------------------------------------------------------ #
+
+    def to_state(self, timestamp: float = 0.0) -> NavigationState:
         return NavigationState(
-            timestamp=timestamp,
-            east_m=float(self.x[0]), north_m=float(self.x[1]),
-            velocity_east_mps=float(self.x[2]), velocity_north_mps=float(self.x[3]),
-            heading_rad=float(self.x[4]), gyro_bias_radps=float(self.x[5]),
-            accel_bias_east_mps2=float(self.x[6]), accel_bias_north_mps2=float(self.x[7]),
+            timestamp=float(timestamp),
+            east_m=float(self.x[0]),
+            north_m=float(self.x[1]),
+            velocity_east_mps=float(self.x[2]),
+            velocity_north_mps=float(self.x[3]),
+            heading_rad=float(self.x[4]),
+            gyro_bias_radps=float(self.x[5]),
+            accel_bias_east_mps2=float(self.x[6]),
+            accel_bias_north_mps2=float(self.x[7]),
         )
 
     @property
-    def position_std_m(self):
-        return float(math.sqrt(max(self.P[0,0] + self.P[1,1], 0.0)))
+    def position_std_m(self) -> float:
+        return float(math.sqrt(max(self.P[0, 0] + self.P[1, 1], 0.0)))
+
+    @property
+    def speed_mps(self) -> float:
+        return float(math.hypot(self.x[2], self.x[3]))
+
+    @property
+    def heading_rad(self) -> float:
+        return float(self.x[IDX_HEADING])

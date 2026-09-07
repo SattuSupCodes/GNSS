@@ -1,73 +1,49 @@
-import math
+# src/navigation/ins/orientation.py
 
-from navigation.core.math_utils import wrap_angle
+from __future__ import annotations
+
+from src.navigation.core.math_utils import wrap_angle
 
 
 class OrientationEstimator:
     """
-    Heading estimator for a phone mounted in a fixed orientation
-    aligned with the vehicle.
-
-    Important assumption
-    --------------------
-    The smartphone is mounted in the vehicle such that its forward
-    direction is aligned with the vehicle's forward direction.
-
-    Therefore, we do NOT estimate arbitrary phone-to-vehicle orientation.
-
-    The estimator simply integrates yaw rate.
+    Heading estimator for a phone mounted straight in the vehicle.
 
     Heading convention:
         0       = North
         +pi/2   = East
         pi      = South
         -pi/2   = West
+
+    Assumption:
+        phone +X = vehicle forward
+        phone +Y = vehicle left
+        phone +Z = upward
+
+    With the standard right-handed ENU convention, positive gyro-Z
+    corresponds to counter-clockwise heading change in this convention.
     """
 
     def __init__(self, initial_heading_rad: float = 0.0):
-        self.yaw = wrap_angle(initial_heading_rad)
-        self.initialized = True
+        self._heading_rad = wrap_angle(initial_heading_rad)
 
     def reset(self, heading_rad: float = 0.0) -> None:
-        """Reset the heading estimate."""
-        self.yaw = wrap_angle(heading_rad)
+        self._heading_rad = wrap_angle(heading_rad)
 
     def update(self, gyro_z: float, dt: float) -> float:
-        """
-        Propagate heading using gyroscope yaw rate.
-
-        Parameters
-        ----------
-        gyro_z:
-            yaw angular velocity in rad/s.
-
-        dt:
-            elapsed time in seconds.
-
-        Returns
-        -------
-        float:
-            updated heading in radians.
-        """
-
         if dt <= 0.0:
-            return self.yaw
+            return self._heading_rad
 
-        self.yaw = wrap_angle(
-            self.yaw + gyro_z * dt
+        # Right-hand +Z rotation is opposite to clockwise compass heading.
+        self._heading_rad = wrap_angle(
+            self._heading_rad - float(gyro_z) * float(dt)
         )
 
-        return self.yaw
+        return self._heading_rad
 
     def set_heading(self, heading_rad: float) -> None:
-        """
-        Explicitly set heading.
-
-        Useful when GNSS provides a reliable course or when the
-        engine is initialized from a known heading.
-        """
-        self.yaw = wrap_angle(heading_rad)
+        self._heading_rad = wrap_angle(heading_rad)
 
     @property
     def heading_rad(self) -> float:
-        return self.yaw
+        return self._heading_rad

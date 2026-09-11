@@ -1,0 +1,76 @@
+{
+  "model": "SpeedLSTM",
+  "device": "cpu",
+  "seed": 42,
+  "batch_size": 32,
+  "epochs_requested": 10,
+  "learning_rate": 0.001,
+  "weight_decay": 1e-05,
+  "input_size": 9,
+  "sequence_length": 100,
+  "best_validation_rmse": 8.023737975142883,
+  "test_metrics": {
+    "mse": 62.05422592163086,
+    "rmse": 7.877450470909408,
+    "mae": 5.962706565856934,
+    "samples": 425600
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_mse": 252.2486053362936,
+      "validation_mse": 111.19664001464844,
+      "validation_rmse": 10.544981745581566,
+      "validation_mae": 9.066839218139648,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 2,
+      "train_mse": 205.43095919033277,
+      "validation_mse": 107.6817626953125,
+      "validation_rmse": 10.376982350149417,
+      "validation_mae": 8.938350677490234,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 3,
+      "train_mse": 166.4653261022526,
+      "validation_mse": 67.66790008544922,
+      "validation_rmse": 8.226050090137381,
+      "validation_mae": 6.720545291900635,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 4,
+      "train_mse": 145.29246846671185,
+      "validation_mse": 64.38037109375,
+      "validation_rmse": 8.023737975142883,
+      "validation_mae": 6.198212623596191,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 5,
+      "train_mse": 133.91840622722896,
+      "validation_mse": 85.40882110595703,
+      "validation_rmse": 9.241689299362807,
+      "validation_mae": 6.958828926086426,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 6,
+      "train_mse": 126.79739519328446,
+      "validation_mse": 65.41248321533203,
+      "validation_rmse": 8.087798415844205,
+      "validation_mae": 6.096399784088135,
+      "learning_rate": 0.0005
+    },
+    {
+      "epoch": 7,
+      "train_mse": 121.11666674263853,
+      "validation_mse": 66.22688293457031,
+      "validation_rmse": 8.137990104108649,
+      "validation_mae": 6.2068891525268555,
+      "learning_rate": 0.0005
+    }
+  ]
+}

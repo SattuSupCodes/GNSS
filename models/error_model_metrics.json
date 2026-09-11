@@ -1,0 +1,54 @@
+{
+  "model": "RandomForestRegressor",
+  "target": "dead-reckoning drift rate (m/s) over ~6 s simulation against GNSS reference",
+  "feature_names": [
+    "accel_x_mean",
+    "accel_x_std",
+    "accel_x_rms",
+    "accel_x_ptp",
+    "accel_y_mean",
+    "accel_y_std",
+    "accel_y_rms",
+    "accel_y_ptp",
+    "accel_z_mean",
+    "accel_z_std",
+    "accel_z_rms",
+    "accel_z_ptp",
+    "gyroz_mean",
+    "gyroz_std",
+    "gyroz_rms",
+    "gyroz_ptp",
+    "jerk_x_std",
+    "jerk_y_std",
+    "jerk_z_std",
+    "accel_mag_mean_abs_dev",
+    "gyroz_jerk_std",
+    "speed_mps"
+  ],
+  "seed": 42,
+  "runtime_use": "expected_position_error_m = drift_rate * gnss_age",
+  "train": {
+    "split": "train",
+    "rmse_mps": 1.5377063251547294,
+    "mae_mps": 1.0167917530468131,
+    "mean_abs_target_mps": 16.57382583618164,
+    "n_samples": 7386,
+    "n_trips": 65
+  },
+  "validation": {
+    "split": "validation",
+    "rmse_mps": 3.9858000391521866,
+    "mae_mps": 2.9407822244383692,
+    "mean_abs_target_mps": 20.568828582763672,
+    "n_samples": 2270,
+    "n_trips": 15
+  },
+  "test": {
+    "split": "test",
+    "rmse_mps": 4.888900167649139,
+    "mae_mps": 3.492380223014976,
+    "mean_abs_target_mps": 17.152652740478516,
+    "n_samples": 2236,
+    "n_trips": 14
+  }
+}

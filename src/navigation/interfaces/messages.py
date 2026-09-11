@@ -88,6 +88,12 @@ class MLNavigationOutput:
     heading_std_rad: Optional[float] = None
 
     accel_correction_enu: Optional[Vec2] = None
+    accel_correction_std_mps2: Optional[float] = None
+
+    # Predicted navigation position error (m) from a learned error model
+    # (D-T5). When present the engine uses it as a floor for the reported
+    # position error / confidence during GNSS outages.
+    position_error_m: Optional[float] = None
 
 
 @dataclass

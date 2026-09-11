@@ -153,6 +153,82 @@ def _to_imu_sample(row: pd.Series, adapter: NavigationSensorAdapter) -> Optional
     )
 
 
+# ---------------------------------------------------------------------- #
+# ML window buffering (D-S7 / D-T3 / D-T4 / D-T5 hook)
+# ---------------------------------------------------------------------- #
+
+
+class _IMUWindowBuffer:
+    """Sliding window of the 6-channel calibrated IMU block.
+
+    Fed one row at a time; ``as_window()`` returns a ``(1, W, 6)`` numpy
+    array (accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z) once enough
+    rows have accumulated, else ``None``.
+    """
+
+    WINDOW_SIZE = 100
+
+    def __init__(self, columns):
+        from collections import deque
+
+        self.columns = list(columns)
+        self._rows = deque(maxlen=self.WINDOW_SIZE)
+        self._pushes = 0
+
+    def push(self, values: dict) -> None:
+        self._rows.append([float(values[c]) if c in values else 0.0 for c in self.columns])
+        self._pushes += 1
+
+    def as_window(self):
+        # ML cadence = one window per WINDOW_SIZE IMU samples (~1 Hz at 100 Hz
+        # IMU), mirroring the non-overlapping windows used in training. This is
+        # both physically sensible and ~100x cheaper than per-row prediction.
+        if len(self._rows) < self.WINDOW_SIZE:
+            return None
+        if self._pushes % self.WINDOW_SIZE != 0:
+            return None
+        import numpy as np
+
+        window = np.asarray(list(self._rows), dtype=np.float64)
+        if not window.shape[0] == self.WINDOW_SIZE:
+            return None
+        return window[np.newaxis, :, :]
+
+
+def _imu_sensor_row(row: pd.Series) -> dict:
+    """Extract the 6 calibrated IMU channels used by the ML models."""
+    values = {}
+    for column in ("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"):
+        v = pd.to_numeric(row.get(column), errors="coerce")
+        values[column] = float(v) if np.isfinite(v) else 0.0
+    return values
+
+
+def _bind_ml_context(ml_inference, engine: IDREngine) -> None:
+    """Bind live engine state as providers, if the adapter supports them."""
+    if not hasattr(ml_inference, "bind"):
+        return
+    state = engine.state
+
+    def heading_provider():
+        return float(state.heading_rad)
+
+    def speed_provider():
+        return float(np.hypot(state.velocity_east_mps, state.velocity_north_mps))
+
+    def gnss_age_provider():
+        try:
+            return float(engine.fusion.gnss_age(state.timestamp))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    ml_inference.bind(
+        heading_provider=heading_provider,
+        speed_provider=speed_provider,
+        gnss_age_provider=gnss_age_provider,
+    )
+
+
 def _to_gnss_sample(row: pd.Series) -> Optional[GNSSSample]:
     # Blackout masks may set gnss_available = False explicitly.
     if "gnss_available" in row.index:
@@ -202,6 +278,7 @@ def run_trip(
     config: dict | None = None,
     engine: IDREngine | None = None,
     gnss_enabled: bool = True,
+    ml_inference=None,
 ) -> EngineTripResult:
     config = config or {}
     engine = engine or build_engine(config)
@@ -221,25 +298,42 @@ def run_trip(
 
     adapter = NavigationSensorAdapter()
 
+    ml_window = _IMUWindowBuffer(
+        columns=("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z")
+    )
+
     rows = []
     for _, row in data.iterrows():
-        if gnss_enabled:
-            gnss = _to_gnss_sample(row)
-            if gnss is None:
-                continue
-        else:
-            gnss = None
-
         imu = _to_imu_sample(row, adapter)
         if imu is None:
             continue
 
-        if gnss_enabled and not engine.initialized:
+        if gnss_enabled:
+            gnss = _to_gnss_sample(row)
+        else:
+            gnss = None
+
+        if gnss_enabled and not engine.initialized and gnss is not None:
             engine.initialize(gnss.latitude, gnss.longitude)
         elif not engine.initialized:
             engine.initialize()
 
         engine.update_imu(imu)
+
+        # ML correction hook (D-S7/D-T3/D-T4/D-T5): run on the IMU window and
+        # push the learned corrections into the filter BEFORE the GNSS update
+        # of the same sample.
+        if ml_inference is not None:
+            ml_window.push(_imu_sensor_row(row))
+            win = ml_window.as_window()
+            if win is not None:
+                _bind_ml_context(ml_inference, engine)
+                try:
+                    output = ml_inference.evaluate(imu.timestamp, win)
+                except Exception as exc:  # noqa: BLE001 - never crash the trip
+                    output = None
+                if output is not None:
+                    engine.update_ml(output)
 
         if gnss is not None:
             engine.update_gnss(gnss)
@@ -258,10 +352,8 @@ def run_trip(
             engine.update_map_match()
 
         output = engine.get_state_dict()
-        output.pop("confidence", None)
-        output.pop("position_error", None)
-        output.pop("mode", None)
-
+        # confidence / position_error / mode are kept so offline validation
+        # (e.g. blackout ML evaluation) can reason about the reported quality.
         row_out = _copy_runtime_columns(row)
         row_out.update(output)
         rows.append(row_out)

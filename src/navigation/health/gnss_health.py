@@ -39,6 +39,7 @@ class GNSSHealthMonitor:
         self.mode = GNSSMode.UNAVAILABLE
         self.last_timestamp: float | None = None
         self.recovery_count = 0
+        self.sustained_spoofs = 0
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -48,6 +49,7 @@ class GNSSHealthMonitor:
         self.mode = GNSSMode.UNAVAILABLE
         self.last_timestamp = None
         self.recovery_count = 0
+        self.sustained_spoofs = 0
 
     # ------------------------------------------------------------------ #
     # Streaming updates
@@ -96,32 +98,56 @@ class GNSSHealthMonitor:
             and float(innovation_m) > max(3.0 * accuracy_m, 20.0)
         )
 
-        if bad_jump and not bad_gap:
-            # Large innovation during continuous tracking => plausible
-            # spurious fix. Independent of outage duration.
+        # Once a recovery is under way, fixes far from the (still-stale)
+        # estimate are convergence pulls, not spoofs: the spoof guard must
+        # stay disabled until the innovation drops back to a sane size.
+        recovering = self.recovery_count > 0 or bad_gap
+
+        if bad_gap:
+            # First fix after a GNSS absence: re-acquisition (recovery),
+            # even if the innovation is large.
+            self.recovery_count = 1
+            self.sustained_spoofs = 0
+        elif recovering:
+            # Mid-recovery: count every usable fix towards health.
+            self.recovery_count += 1
+        elif bad_jump:
+            # Large innovation during continuous tracking (no preceding
+            # outage) => plausible spurious fix. But a *persistent* large
+            # innovation across several self-consistent fixes is a genuine
+            # hard re-location (bridge/tunnel/LAAS switch): re-arm recovery
+            # so the filter can be pulled back, instead of dead-locking in
+            # dead-reckoning forever.
+            self.sustained_spoofs += 1
+            if self.sustained_spoofs >= self.recovering_updates:
+                self.recovery_count = 1
+                self.sustained_spoofs = 0
+                self.mode = GNSSMode.RECOVERING
+                return self.mode
             self.mode = GNSSMode.UNAVAILABLE
             self.recovery_count = 0
-        elif bad_gap:
-            # First fix after a GNSS absence: treat as re-acquisition
-            # (recovery), not as a spoof, even if the innovation is large.
-            self.recovery_count += 1
-            if accuracy_m < self.degraded_accuracy_m:
-                if self.recovery_count >= self.recovering_updates:
-                    self.mode = GNSSMode.HEALTHY
-                else:
-                    self.mode = GNSSMode.RECOVERING
+            return self.mode
+        else:
+            self.recovery_count = 0
+            self.sustained_spoofs = 0
+
+        if self.recovery_count > 0:
+            if (
+                not bad_jump
+                and accuracy_m < self.degraded_accuracy_m
+                and self.recovery_count >= self.recovering_updates
+            ):
+                self.mode = GNSSMode.HEALTHY
+                self.recovery_count = 0
+                self.sustained_spoofs = 0
+            elif accuracy_m < self.degraded_accuracy_m:
+                self.mode = GNSSMode.RECOVERING
             else:
                 self.mode = GNSSMode.DEGRADED
-        elif accuracy_m >= self.degraded_accuracy_m:
+            return self.mode
+
+        if accuracy_m >= self.degraded_accuracy_m:
             self.mode = GNSSMode.DEGRADED
-            self.recovery_count = 0
-        elif self.mode in (GNSSMode.UNAVAILABLE, GNSSMode.RECOVERING):
-            self.recovery_count += 1
-            self.mode = (
-                GNSSMode.HEALTHY
-                if self.recovery_count >= self.recovering_updates
-                else GNSSMode.RECOVERING
-            )
         else:
             self.mode = GNSSMode.HEALTHY
 

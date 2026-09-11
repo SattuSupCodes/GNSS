@@ -61,6 +61,7 @@ class IDREngine:
         self.last_gnss_timestamp: float | None = None
         self.mode = "UNINITIALIZED"
         self._state = NavigationState()
+        self._ml_position_error_m: float | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -73,6 +74,7 @@ class IDREngine:
         self.last_gnss_timestamp = None
         self.mode = "UNINITIALIZED"
         self._state = NavigationState()
+        self._ml_position_error_m = None
 
     def initialize(
         self,
@@ -159,7 +161,10 @@ class IDREngine:
             heading_rad=output.heading_rad,
             heading_std_rad=output.heading_std_rad,
             accel_correction_enu=output.accel_correction_enu,
+            accel_correction_std_mps2=output.accel_correction_std_mps2,
         )
+        # D-T5: predict navigation error floor used by confidence/error report.
+        self._ml_position_error_m = output.position_error_m
         self._refresh_state(output.timestamp)
         return self.get_state()
 
@@ -244,7 +249,15 @@ class IDREngine:
 
     def _refresh_state(self, timestamp: float) -> None:
         s = self.fusion.to_state(timestamp)
-        s.position_error_m = self.fusion.filter.position_std_m
+        # D-T5 error floor: when a learned error estimate is available it
+        # overrides the (often optimistic while healthy) covariance-derived
+        # value, so confidence reflects the predicted outage drift.
+        if self._ml_position_error_m is not None and self._ml_position_error_m >= 0.0:
+            s.position_error_m = max(
+                float(s.position_error_m), float(self._ml_position_error_m)
+            )
+        else:
+            s.position_error_m = self.fusion.filter.position_std_m
         s.confidence = self.confidence.estimate(
             s.position_error_m,
             self.mode,

@@ -1,0 +1,56 @@
+{
+  "model": "RandomForestRegressor",
+  "target": "systematic forward acceleration error (m/s^2), GNSS-speed-derived minus measured",
+  "feature_names": [
+    "accel_x_mean",
+    "accel_x_std",
+    "accel_x_rms",
+    "accel_x_ptp",
+    "accel_y_mean",
+    "accel_y_std",
+    "accel_y_rms",
+    "accel_y_ptp",
+    "accel_z_mean",
+    "accel_z_std",
+    "accel_z_rms",
+    "accel_z_ptp",
+    "gyroz_mean",
+    "gyroz_std",
+    "gyroz_rms",
+    "gyroz_ptp",
+    "jerk_x_std",
+    "jerk_y_std",
+    "jerk_z_std",
+    "accel_mag_mean_abs_dev",
+    "gyroz_jerk_std"
+  ],
+  "seed": 42,
+  "runtime_std_mps2": 1.0,
+  "train": {
+    "split": "train",
+    "rmse_mps2": 0.13857280910450176,
+    "mae_mps2": 0.09003207647240839,
+    "mean_abs_target_mps2": 0.11564354598522186,
+    "std_target_mps2": 0.1995425671339035,
+    "n_samples": 11260,
+    "n_trips": 65
+  },
+  "validation": {
+    "split": "validation",
+    "rmse_mps2": 0.22579888425749525,
+    "mae_mps2": 0.13310395991354676,
+    "mean_abs_target_mps2": 0.09632297605276108,
+    "std_target_mps2": 0.17053601145744324,
+    "n_samples": 3829,
+    "n_trips": 15
+  },
+  "test": {
+    "split": "test",
+    "rmse_mps2": 0.23550625023746058,
+    "mae_mps2": 0.13185332634506136,
+    "mean_abs_target_mps2": 0.12567119300365448,
+    "std_target_mps2": 0.22603939473628998,
+    "n_samples": 3960,
+    "n_trips": 13
+  }
+}

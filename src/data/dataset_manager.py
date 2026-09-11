@@ -280,9 +280,14 @@ class DatasetManager:
     # ------------------------------------------------------------------ #
 
     def _find_processed(self, trip_id: str) -> Optional[Path]:
+        trip_id = trip_id.lower()
+
         for f in self.list_processed_files():
-            if f.stem.lower() == trip_id.lower():
+            stem = f.stem.lower()
+
+            if stem == trip_id or stem == f"trip_{trip_id}":
                 return f
+
         return None
 
     @staticmethod

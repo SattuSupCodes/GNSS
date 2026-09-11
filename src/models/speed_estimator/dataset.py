@@ -32,6 +32,7 @@ class SpeedSequenceDataset(Dataset):
         parquet_path: str,
         feature_columns: Optional[List[str]] = None,
         target_column: str = DEFAULT_TARGET_COLUMN,
+        feature_transform = None
     ):
         self.parquet_path = Path(parquet_path)
 
@@ -88,6 +89,9 @@ class SpeedSequenceDataset(Dataset):
                 posinf=0.0,
                 neginf=0.0,
             )
+
+            if feature_transform is not None:
+                x = feature_transform(x)
 
             # Replace missing targets with zero, but keep the mask so
             # training/evaluation can ignore those positions.

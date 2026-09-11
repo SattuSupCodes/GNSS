@@ -344,7 +344,9 @@ def _attach_timestamps(df: pd.DataFrame, path: Path) -> pd.DataFrame:
         dt = pd.to_datetime(fixed, format="%Y-%m-%d %H:%M:%S.%f", errors="coerce")
         out[DATETIME] = dt
         # POSIX epoch seconds
-        out[TS_SEC] = dt.astype("int64", errors="ignore").astype(float) / 1e9
+        out[TS_SEC] = dt.map(
+            lambda x: x.timestamp() if pd.notna(x) else float("nan")
+        ).astype(float)
     else:
         # No date column: try ms-since-start as the primary time if present,
         # else leave timestamp as NaN (all-NaN column is created for schema

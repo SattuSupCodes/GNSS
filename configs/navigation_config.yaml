@@ -28,9 +28,11 @@ engine:
     max_candidates: 5
 
 ml:
-  # AI integration (D-S7). Pipeline uses the fallback (classical) model until
-  # trained checkpoints are registered.
-  enabled: false
+  # AI integration (D-S7). When enabled and the selected trained artifact
+  # exists, the engine uses the trained speed model; otherwise it silently
+  # falls back to the classical (FallbackMLInference) behaviour.
+  enabled: true
+  model: "lstm"
   window_samples: 100
 
 output:

@@ -12,6 +12,7 @@ reference_* columns are used only for scoring afterwards.
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,19 @@ from src.navigation.map_matching.map_matcher import MapMatcher
 EARTH_RADIUS_M = 6_378_137.0
 
 _FILTERS = {"ekf": EKF, "ukf": UKF}
+
+#: Sensor channels consumed by the trained speed models, in training order.
+ML_FEATURE_COLUMNS = [
+    "accel_x_cal",
+    "accel_y_cal",
+    "accel_z_cal",
+    "gyro_x_cal",
+    "gyro_y_cal",
+    "gyro_z_cal",
+    "mag_x_cal",
+    "mag_y_cal",
+    "mag_z_cal",
+]
 
 
 def load_yaml(path) -> dict:
@@ -88,11 +102,33 @@ def build_engine(config: dict) -> IDREngine:
             max_candidates=int(map_cfg.get("max_candidates", 5)),
         )
 
+    # AI/ML integration (D-S7): Trap into the trained speed model when the
+    # config requests it and the artifact exists; otherwise the engine keeps
+    # its classical fallback (unchanged behaviour).
+    ml_inference = _build_ml_from_config(
+        config.get("ml", {}),
+    )
+
     return IDREngine(
         fusion=fusion,
         map_matcher=map_matcher,
         map_match_std_m=float(engine_cfg.get("map_match_std_m", 3.0)),
+        ml_inference=ml_inference,
     )
+
+
+def _build_ml_from_config(ml_cfg: dict):
+    from src.navigation.engine.model_interface import (
+        FallbackMLInference,
+        build_ml_inference,
+    )
+
+    if not ml_cfg.get("enabled", False):
+        return None
+
+    repo_root = Path(__file__).resolve().parents[2]
+
+    return build_ml_inference(ml_cfg, repo_root=repo_root)
 
 
 def _build_fusion(filter_factory, fusion_cfg: dict):
@@ -298,9 +334,29 @@ def run_trip(
 
     adapter = NavigationSensorAdapter()
 
-    ml_window = _IMUWindowBuffer(
-        columns=("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z")
-    )
+    # ------------------------------------------------------------ #
+    # ML window feeding (D-S7). When ml.enabled is true and the
+    # engine carries a real MLInference, buffer the calibrated sensor
+    # window and feed it through the trained speed model.
+    # ------------------------------------------------------------ #
+    ml_enabled = bool(config.get("ml", {}).get("enabled", False))
+    ml_window_samples = int(config.get("ml", {}).get("window_samples", 100))
+
+    if ml_enabled:
+        from src.navigation.engine.model_interface import FallbackMLInference
+
+        ml_active = not isinstance(engine.ml_inference, FallbackMLInference)
+        print(
+            f"[ML] enabled = {ml_enabled} | active (trained model) = {ml_active}"
+        )
+        print(
+            f"[ML] using {type(engine.ml_inference).__name__} "
+            f"(speed_model={getattr(engine.ml_inference, 'speed_model', None) is not None})"
+        )
+    else:
+        ml_active = False
+
+    ml_window = deque(maxlen=ml_window_samples)
 
     rows = []
     for _, row in data.iterrows():
@@ -337,6 +393,28 @@ def run_trip(
 
         if gnss is not None:
             engine.update_gnss(gnss)
+
+        # --------------------------------------------------------
+        # Trained speed-model inference (optional)
+        # --------------------------------------------------------
+        if ml_active:
+            features = np.asarray(
+                [
+                    pd.to_numeric(row.get(column), errors="coerce")
+                    for column in ML_FEATURE_COLUMNS
+                ],
+                dtype=np.float32,
+            )
+            features = np.nan_to_num(features)
+            ml_window.append(features)
+
+            if len(ml_window) == ml_window_samples:
+                window = np.stack(ml_window)
+                output = engine.ml_inference.evaluate(
+                    float(imu.timestamp),
+                    window,
+                )
+                engine.update_ml(output)
 
         if engine_cfg.get("apply_non_holonomic", True):
             engine.apply_non_holonomic_constraint()

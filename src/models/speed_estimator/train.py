@@ -1,6 +1,18 @@
-"""Production training pipeline for smartphone speed estimation."""
+"""Production training pipeline for smartphone speed estimation.
+
+Supports three comparable architectures for the same task:
+
+* ``lstm`` (default) - ``SpeedLSTM``
+* ``gru``             - ``SpeedGRU``
+* ``tcn``             - ``SpeedTCN``
+
+Each model writes its own checkpoint/scaler/metrics so no artifact is
+overwritten. ``python src/models/speed_estimator/train.py`` still trains the
+LSTM exactly as before.
+"""
 
 from pathlib import Path
+import argparse
 import json
 import random
 
@@ -12,6 +24,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.models.speed_estimator.dataset import SpeedSequenceDataset
 from src.models.speed_estimator.features import FeatureScaler
 from src.models.speed_estimator.lstm import SpeedLSTM
+from src.models.speed_estimator.gru import SpeedGRU
+from src.models.speed_estimator.tcn import SpeedTCN
 
 
 # ============================================================
@@ -33,9 +47,52 @@ VALIDATION_PATH = Path("data/validation/sequences.parquet")
 TEST_PATH = Path("data/testing/sequences.parquet")
 
 MODEL_DIR = Path("models")
-MODEL_PATH = MODEL_DIR / "speed_lstm.pt"
-SCALER_PATH = MODEL_DIR / "speed_lstm_scaler.npz"
-METRICS_PATH = MODEL_DIR / "speed_lstm_metrics.json"
+
+# Registry of supported architectures -> (model class, artifact stem).
+MODEL_REGISTRY = {
+    "lstm": SpeedLSTM,
+    "gru": SpeedGRU,
+    "tcn": SpeedTCN,
+}
+
+
+def artifact_paths(model_type: str) -> tuple:
+    """Return (checkpoint, scaler, metrics) paths for a model type."""
+    stem = f"speed_{model_type}"
+    return (
+        MODEL_DIR / f"{stem}.pt",
+        MODEL_DIR / f"{stem}_scaler.npz",
+        MODEL_DIR / f"{stem}_metrics.json",
+    )
+
+
+def build_model(model_type: str, checkpoint: dict = None):
+    """Instantiate the requested architecture.
+
+    Without a checkpoint the defaults used by the original LSTM training are
+    chosen; with a checkpoint the stored hyper-parameters win so a model can
+    be reloaded exactly.
+    """
+    model_class = MODEL_REGISTRY[model_type]
+
+    if checkpoint is None:
+        checkpoint = {}
+
+    if model_type in ("lstm", "gru"):
+        return model_class(
+            input_size=checkpoint.get("input_size", 9),
+            hidden_size=checkpoint.get("hidden_size", 64),
+            num_layers=checkpoint.get("num_layers", 2),
+        )
+
+    if model_type == "tcn":
+        return model_class(
+            input_size=checkpoint.get("input_size", 9),
+            channels=checkpoint.get("channels", 32),
+            dilations=tuple(checkpoint.get("dilations", [1, 2, 4, 8])),
+        )
+
+    raise ValueError(f"Unknown model type: {model_type}")
 
 
 # ============================================================
@@ -286,6 +343,29 @@ def evaluate(
 
 def main():
 
+    parser = argparse.ArgumentParser(
+        description="Train a smartphone speed-estimation model."
+    )
+    parser.add_argument(
+        "--model",
+        choices=list(MODEL_REGISTRY),
+        default="lstm",
+        help="Architecture to train (default: lstm).",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=EPOCHS,
+        help="Maximum number of training epochs.",
+    )
+    args = parser.parse_args()
+
+    model_type = args.model
+    epochs = args.epochs
+    model_class = MODEL_REGISTRY[model_type]
+
+    MODEL_PATH, SCALER_PATH, METRICS_PATH = artifact_paths(model_type)
+
     set_seed()
 
     MODEL_DIR.mkdir(
@@ -301,12 +381,14 @@ def main():
 
     print()
     print("=" * 60)
-    print("SMARTPHONE SPEED ESTIMATION - LSTM TRAINING")
+    print(
+        f"SMARTPHONE SPEED ESTIMATION - {model_type.upper()} TRAINING"
+    )
     print("=" * 60)
     print(f"Device: {device}")
     print(f"Seed: {SEED}")
     print(f"Batch size: {BATCH_SIZE}")
-    print(f"Epochs: {EPOCHS}")
+    print(f"Epochs: {epochs}")
     print(f"Learning rate: {LEARNING_RATE}")
     print()
 
@@ -391,11 +473,7 @@ def main():
     # Model
     # --------------------------------------------------------
 
-    model = SpeedLSTM(
-        input_size=9,
-        hidden_size=64,
-        num_layers=2,
-    )
+    model = build_model(model_type)
 
     model = model.to(device)
 
@@ -445,7 +523,7 @@ def main():
     print("TRAINING")
     print("=" * 60)
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, epochs + 1):
 
         train_loss = train_one_epoch(
             model,
@@ -467,7 +545,7 @@ def main():
         current_lr = optimizer.param_groups[0]["lr"]
 
         print(
-            f"Epoch {epoch:02d}/{EPOCHS} "
+            f"Epoch {epoch:02d}/{epochs} "
             f"| Train MSE: {train_loss:.4f} "
             f"| Val RMSE: {validation_metrics['rmse']:.4f} km/h "
             f"| Val MAE: {validation_metrics['mae']:.4f} km/h "
@@ -492,11 +570,23 @@ def main():
             best_validation_rmse = validation_rmse
             epochs_without_improvement = 0
 
+            if model_type in ("lstm", "gru"):
+                arch_params = {
+                    "input_size": 9,
+                    "hidden_size": 64,
+                    "num_layers": 2,
+                }
+            else:
+                arch_params = {
+                    "input_size": 9,
+                    "channels": 32,
+                    "dilations": [1, 2, 4, 8],
+                }
+
             checkpoint = {
+                "model_type": model_type,
                 "model_state_dict": model.state_dict(),
-                "input_size": 9,
-                "hidden_size": 64,
-                "num_layers": 2,
+                **arch_params,
                 "feature_columns": [
                     "accel_x_cal",
                     "accel_y_cal",
@@ -580,11 +670,12 @@ def main():
     # --------------------------------------------------------
 
     results = {
-        "model": "SpeedLSTM",
+        "model": f"Speed{model_type.upper()}",
+        "model_type": model_type,
         "device": str(device),
         "seed": SEED,
         "batch_size": BATCH_SIZE,
-        "epochs_requested": EPOCHS,
+        "epochs_requested": epochs,
         "learning_rate": LEARNING_RATE,
         "weight_decay": WEIGHT_DECAY,
         "input_size": 9,

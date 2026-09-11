@@ -13,7 +13,10 @@ runs purely classically.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional, Tuple
 
 import logging
@@ -22,7 +25,7 @@ import numpy as np
 
 from src.navigation.interfaces.messages import MLNavigationOutput
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("gnss.ml")
 
 #: A sliding IMU window: shape ``(n_windows, window_len, 6)`` with columns
 #: [ax, ay, az, gx, gy, gz] (already calibrated, gravity compensated).
@@ -125,143 +128,194 @@ class CompositeMLInference(MLInference):
 
         if self.speed_model is not None:
             speed, std = self.speed_model.predict_speed(window)
-            output.speed_mps = speed
-            output.speed_std_mps = std
+            output = dataclasses.replace(
+                output,
+                speed_mps=speed,
+                speed_std_mps=std,
+            )
 
         if self.imu_correction_model is not None:
             correction, std = self.imu_correction_model.predict_correction(window)
-            output.accel_correction_enu = correction
+            output = dataclasses.replace(
+                output,
+                accel_correction_enu=correction,
+            )
 
         return output
 
 
-class TrainedMLInference(MLInference):
-    """Runtime adapter wiring the trained navigation-side models (D-T3/D-T4/D-T5).
+# ====================================================================== #
+# Trained speed-model adapter (D-T2)
+# ====================================================================== #
 
-    Conceptual flow (the D-T3 -> D-T4 -> D-T5 -> navigation/fusion path):
+#: Trained-artifact registry used by :func:`build_ml_inference`.
+TRAINED_SPEED_MODELS = {
+    "lstm": ("models/speed_lstm.pt", "models/speed_lstm_scaler.npz"),
+    "gru": ("models/speed_gru.pt", "models/speed_gru_scaler.npz"),
+    "tcn": ("models/speed_tcn.pt", "models/speed_tcn_scaler.npz"),
+}
 
-        IMU window
-          |
-          +-> D-T3 vibration classifier
-          |      used to shape measurement uncertainties (rough road =>
-          |      the speed/accel corrections are trusted less) and to flag
-          |      stationarity for speed pseudo-measurements
-          |
-          +-> D-T4 IMU-correction model
-          |      predicts systematic forward-accel error -> rotated to ENU
-          |      using the engine heading -> ``accel_correction_enu``
-          |      (consumed by the filter's ``update_accel_correction``)
-          |
-          +-> D-T5 error model
-                 predicts drift rate -> expected position error =
-                 drift_rate * GNSS age -> ``position_error_m`` floor
-                 (consumed by the engine confidence estimation)
-          |
-          v
-        MLNavigationOutput -> engine.update_ml() -> filter/fusion state
 
-    Every model degrades gracefully: a missing or unreadable artifact simply
-    omits its contribution, so the engine keeps running classically.
+class TrainedSpeedModel(SpeedModel):
+    """Wrap a trained ``SpeedEstimator`` behind the engine's ``SpeedModel``.
+
+    Paths are resolved relative to the repository root so the adapter keeps
+    working regardless of the caller's working directory. When the model
+    cannot be loaded (missing/scorrupt artifact, wrong window shape) the
+    adapter logs a warning and returns ``(None, None)``; the navigation
+    backend then simply ignores the ML output - it never crashes because an
+    ML model is unavailable.
     """
 
     def __init__(
         self,
-        vibration_classifier: Optional[VibrationClassifier] = None,
-        imu_correction_model: Optional[IMUCorrectionModel] = None,
-        error_model: Optional[ErrorModel] = None,
-        speed_model: Optional[SpeedModel] = None,
+        model_path: str | Path = "models/speed_lstm.pt",
+        scaler_path: str | Path = "models/speed_lstm_scaler.npz",
+        sequence_length: int = 100,
+        repo_root: str | Path | None = None,
     ):
-        from src.models.vibration_classifier.inference import (
-            RandomForestVibrationClassifier,
-        )
-        from src.models.imu_correction.inference import (
-            RandomForestIMUCorrectionModel,
-        )
-        from src.models.fusion_correction.inference import (
-            RandomForestErrorModel,
-        )
+        self.repo_root = Path(repo_root) if repo_root else None
 
-        self.vibration_classifier = vibration_classifier or RandomForestVibrationClassifier()
-        self.imu_correction_model = imu_correction_model or RandomForestIMUCorrectionModel()
-        self.error_model = error_model or RandomForestErrorModel()
-        self.speed_model = speed_model
+        self.model_path = self._resolve(model_path)
+        self.scaler_path = self._resolve(scaler_path)
+        self.sequence_length = int(sequence_length)
 
-    @property
+        self._estimator = None
+        self._load_error: Optional[str] = None
+
+    def _resolve(self, path: str | Path) -> Path:
+        path = Path(path)
+        if self.repo_root is not None:
+            return self.repo_root / path
+        if path.is_absolute() or path.exists():
+            return path
+        # Fall back to the repository root relative to this file.
+        return Path(__file__).resolve().parents[3] / path
+
     def available(self) -> bool:
-        return any(
-            getattr(m, "available", False)
-            for m in (
-                self.vibration_classifier,
-                self.imu_correction_model,
-                self.error_model,
-                self.speed_model,
+        """True when both artifact files exist (fast check)."""
+        return self.model_path.exists() and self.scaler_path.exists()
+
+    def _ensure_loaded(self):
+        if self._estimator is not None:
+            return self._estimator
+
+        from src.models.speed_estimator.inference import SpeedEstimator
+
+        try:
+            self._estimator = SpeedEstimator(
+                model_path=str(self.model_path),
+                scaler_path=str(self.scaler_path),
             )
-        )
+            logger.info(
+                "Loaded trained speed model from %s",
+                self.model_path,
+            )
+            return self._estimator
+        except Exception as error:  # pragma: no cover - runtime safety net
+            self._load_error = str(error)
+            self._estimator = None
+            logger.warning(
+                "Speed model unavailable (%s): %s",
+                self.model_path,
+                error,
+            )
+            return None
 
-    def bind(
+    def predict_speed(
         self,
-        heading_provider=None,
-        speed_provider=None,
-        gnss_age_provider=None,
-    ) -> "TrainedMLInference":
-        """Wire live engine context into the sub-models (all optional)."""
-        if hasattr(self.imu_correction_model, "set_heading_provider"):
-            self.imu_correction_model.set_heading_provider(heading_provider)
-        if hasattr(self.error_model, "set_speed_provider"):
-            self.error_model.set_speed_provider(speed_provider)
-        if hasattr(self.error_model, "set_gnss_age_provider"):
-            self.error_model.set_gnss_age_provider(gnss_age_provider)
-        return self
+        window: IMUWindow,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Return ``(speed_mps, std_mps)`` or ``(None, None)`` if unsure."""
+        try:
+            arr = np.asarray(window, dtype=np.float32)
 
-    def evaluate(self, timestamp: float, window: IMUWindow) -> MLNavigationOutput:
-        vibration_class = None
-        if getattr(self.vibration_classifier, "available", False):
-            try:
-                vibration_class = self.vibration_classifier.classify(window)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("D-T3 classify failed: %s", exc)
+            if arr.ndim == 3 and arr.shape[0] == 1:
+                arr = arr[0]
 
-        speed_mps = None
-        speed_std_mps = None
-        if self.speed_model is not None:
-            try:
-                speed_mps, std = self.speed_model.predict_speed(window)
-                speed_std_mps = std if std is not None else 1.0
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("speed model failed: %s", exc)
+            expected = (self.sequence_length, 9)
+            if arr.ndim != 2 or arr.shape != expected:
+                logger.warning(
+                    "Speed model window shape %s does not match %s",
+                    arr.shape,
+                    expected,
+                )
+                return (None, None)
 
-        accel_correction_enu = None
-        accel_correction_std_mps2 = None
-        if getattr(self.imu_correction_model, "available", False):
-            try:
-                correction, std = self.imu_correction_model.predict_correction(window)
-                if correction is not None:
-                    accel_correction_enu = tuple(float(x) for x in correction)
-                    accel_correction_std_mps2 = float(std) if std is not None else 1.0
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("D-T4 predict_correction failed: %s", exc)
+            estimator = self._ensure_loaded()
+            if estimator is None:
+                return (None, None)
 
-        position_error_m = None
-        if getattr(self.error_model, "available", False):
-            try:
-                position_error_m, _conf = self.error_model.predict_error(window)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("D-T5 predict_error failed: %s", exc)
+            prediction_kmh = estimator.predict(arr)
 
-        # D-T3 consumption: vibration-rough roads make the learned acceleration
-        # correction less reliable (inflate its std); stationary windows emit a
-        # zero-speed pseudo-measurement so the filter holds position.
-        if vibration_class == "vibration" and accel_correction_std_mps2 is not None:
-            accel_correction_std_mps2 = 2.0 * accel_correction_std_mps2
-        if vibration_class == "stationary":
-            speed_mps = 0.0
-            speed_std_mps = 0.2
+            prediction_kmh = np.asarray(
+                prediction_kmh,
+                dtype=np.float64,
+            )
 
-        return MLNavigationOutput(
-            timestamp=float(timestamp),
-            speed_mps=speed_mps,
-            speed_std_mps=speed_std_mps,
-            accel_correction_enu=accel_correction_enu,
-            accel_correction_std_mps2=accel_correction_std_mps2,
-            position_error_m=position_error_m,
+            if prediction_kmh.size == 0:
+                return (None, None)
+
+            prediction_kmh = np.nan_to_num(prediction_kmh)
+
+            # km/h -> m/s; aggregate the per-timestep window to one scalar.
+            mean_mps = float(np.mean(prediction_kmh)) / 3.6
+            std_mps = float(np.std(prediction_kmh)) / 3.6
+
+            return (mean_mps, std_mps)
+
+        except Exception as error:
+            logger.warning("Speed model inference failed: %s", error)
+            return (None, None)
+
+
+def build_ml_inference(
+    ml_config: Optional[dict] = None,
+    repo_root: str | Path | None = None,
+) -> MLInference:
+    """Build the runtime ``MLInference`` from a config dict (``ml:`` block).
+
+    Rules:
+        * disabled or no config   -> ``FallbackMLInference`` (current behavior)
+        * unknown model name      -> ``FallbackMLInference``
+        * artifact files missing  -> ``FallbackMLInference``
+        * artifacts present       -> ``CompositeMLInference`` with the trained
+          :class:`TrainedSpeedModel`; model loading is verified lazily and the
+          adapter degrades to ``(None, None)`` on any inference error.
+    """
+    if not ml_config or not ml_config.get("enabled", False):
+        return FallbackMLInference()
+
+    model_name = str(ml_config.get("model", "lstm"))
+
+    artifacts = TRAINED_SPEED_MODELS.get(model_name)
+
+    if artifacts is None:
+        logger.warning("Unknown ML model %r; using fallback.", model_name)
+        return FallbackMLInference()
+
+    model_path, scaler_path = artifacts
+
+    if ml_config.get("model_path"):
+        model_path = ml_config["model_path"]
+
+    if ml_config.get("scaler_path"):
+        scaler_path = ml_config["scaler_path"]
+
+    speed_model = TrainedSpeedModel(
+        model_path=model_path,
+        scaler_path=scaler_path,
+        sequence_length=int(ml_config.get("window_samples", 100)),
+        repo_root=repo_root,
+    )
+
+    if not speed_model.available():
+        logger.warning(
+            "Trained speed model %r artifacts not found "
+            "(%s); using fallback.",
+            model_name,
+            speed_model.model_path,
         )
+        return FallbackMLInference()
+
+    return CompositeMLInference(speed_model=speed_model)

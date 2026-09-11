@@ -24,6 +24,34 @@ DEFAULT_FEATURE_COLUMNS = [
 DEFAULT_TARGET_COLUMN = "speed_kmh"
 
 
+def resolve_feature_columns(df, feature_columns):
+    """Map requested columns onto those present in a DataFrame.
+
+    Falls back to the un-calibrated sensor channel (e.g. ``accel_x`` for
+    ``accel_x_cal``) when a ``*_cal`` column is absent - some legacy split
+    files were generated without calibration columns. Returns ``(resolved,
+    missing)``.
+    """
+    available = set(df.columns)
+
+    resolved = []
+    missing = []
+
+    for column in feature_columns:
+        if column in available:
+            resolved.append(column)
+            continue
+
+        base = column.replace("_cal", "")
+        if base in available:
+            resolved.append(base)
+            continue
+
+        missing.append(column)
+
+    return resolved, missing
+
+
 class SpeedSequenceDataset(Dataset):
     """Load fixed-length sensor sequences for speed estimation."""
 
@@ -51,14 +79,34 @@ class SpeedSequenceDataset(Dataset):
         # Read the generated sequence file.
         df = pd.read_parquet(self.parquet_path)
 
-        # Check that the required columns exist.
-        required = ["sequence_id"] + self.feature_columns + [self.target_column]
-        missing = [column for column in required if column not in df.columns]
+        # Check that the required columns exist (with cal -> base fallback).
+        if feature_columns is None:
+            self.feature_columns = DEFAULT_FEATURE_COLUMNS
+        else:
+            self.feature_columns = feature_columns
+
+        resolved, missing = resolve_feature_columns(
+            df,
+            self.feature_columns,
+        )
+
+        required = ["sequence_id", "sample_in_window"] + resolved + [self.target_column]
+        missing_required = [
+            column for column in required if column not in df.columns
+        ]
+
+        if missing_required:
+            raise ValueError(
+                f"Missing required columns: {missing_required}"
+            )
 
         if missing:
-            raise ValueError(
-                f"Missing required columns: {missing}"
+            print(
+                f"WARNING {self.parquet_path}: calibrated columns missing, "
+                f"falling back to base sensors for {missing}"
             )
+
+        self.feature_columns = resolved
 
         # Keep sequences in their original order.
         self.sequences = []

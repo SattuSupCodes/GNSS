@@ -36,6 +36,8 @@ data/maps/*
 # Model artifacts
 models/checkpoints/*
 models/exported/*
+# Large serialized baselines (metrics + comparison are tracked instead)
+models/*.joblib
 
 # Evaluation outputs
 evaluation/results/*

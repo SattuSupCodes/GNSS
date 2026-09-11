@@ -8,6 +8,8 @@ import torch
 
 from src.models.speed_estimator.features import FeatureScaler
 from src.models.speed_estimator.lstm import SpeedLSTM
+from src.models.speed_estimator.gru import SpeedGRU
+from src.models.speed_estimator.tcn import SpeedTCN
 
 
 DEFAULT_MODEL_PATH = Path("models/speed_lstm.pt")
@@ -25,9 +27,49 @@ FEATURE_COLUMNS = [
     "mag_z_cal",
 ]
 
+MODEL_TYPES = {
+    "lstm": SpeedLSTM,
+    "gru": SpeedGRU,
+    "tcn": SpeedTCN,
+}
+
+
+def build_model_from_checkpoint(checkpoint: dict):
+    """Construct the right architecture from a saved checkpoint."""
+    model_type = str(checkpoint.get("model_type", "lstm"))
+
+    if model_type not in MODEL_TYPES:
+        raise ValueError(
+            f"Unknown model_type {model_type!r} in checkpoint"
+        )
+
+    model_class = MODEL_TYPES[model_type]
+
+    if model_type in ("lstm", "gru"):
+        return model_class(
+            input_size=checkpoint.get("input_size", 9),
+            hidden_size=checkpoint.get("hidden_size", 64),
+            num_layers=checkpoint.get("num_layers", 2),
+        )
+
+    if model_type == "tcn":
+        return model_class(
+            input_size=checkpoint.get("input_size", 9),
+            channels=checkpoint.get("channels", 32),
+            dilations=tuple(checkpoint.get("dilations", [1, 2, 4, 8])),
+        )
+
+    raise ValueError(f"Unknown model type: {model_type}")
+
 
 class SpeedEstimator:
-    """Load a trained LSTM and estimate speed from sensor sequences."""
+    """Load a trained speed model and estimate speed from sensor sequences.
+
+    Supports the LSTM, GRU and TCN checkpoints written by ``train.py``. The
+    architecture is auto-detected from the checkpoint's ``model_type`` field
+    (defaults to ``lstm`` for backward compatibility with the original
+    artifact).
+    """
 
     def __init__(
         self,
@@ -70,11 +112,7 @@ class SpeedEstimator:
             map_location=self.device,
         )
 
-        self.model = SpeedLSTM(
-            input_size=checkpoint.get("input_size", 9),
-            hidden_size=checkpoint.get("hidden_size", 64),
-            num_layers=checkpoint.get("num_layers", 2),
-        )
+        self.model = build_model_from_checkpoint(checkpoint)
 
         self.model.load_state_dict(
             checkpoint["model_state_dict"]

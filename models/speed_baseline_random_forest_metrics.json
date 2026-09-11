@@ -1,0 +1,17 @@
+{
+  "model": "random_forest",
+  "seed": 42,
+  "training_rows": 250000,
+  "validation_metrics": {
+    "samples": 6800,
+    "mse": 13.933253298446756,
+    "rmse": 3.7327273270956662,
+    "mae": 2.975601798645956
+  },
+  "test_metrics": {
+    "samples": 183200,
+    "mse": 31.984125649592926,
+    "rmse": 5.655450967835627,
+    "mae": 4.231093713315554
+  }
+}

@@ -1,14 +1,23 @@
-"""AI / ML integration interface (D-S7).
+"""AI / ML integration interface (D-S7 / D-T3 / D-T4 / D-T5).
 
 This module defines the *contract* between the navigation backend and
-Tanishk's learned components (D-T2 speed model, D-T4 IMU correction model,
-D-T3 vibration classifier, D-T5 error model).
+the learned components:
 
-The engine consumes ``MLNavigationOutput`` messages (defined in
-``navigation/interfaces/messages.py``). The adapters below let trained
-models be wrapped behind a small, stable interface. Until the models are
-delivered, ``FallbackMLInference`` produces no corrections, so the engine
-runs purely classically.
+    D-T2 speed model   -> ``TrainedSpeedModel`` (wraps LSTM / GRU / TCN)
+    D-T3 vibration     -> ``RandomForestVibrationClassifier``
+    D-T4 IMU correction -> ``RandomForestIMUCorrectionModel``
+    D-T5 error model   -> ``RandomForestErrorModel``
+
+``TrainedMLInference`` combines D-T3 + D-T4 + D-T5 into a single
+``MLInference`` adapter: it consumes 6-channel calibrated IMU windows
+(accel_x .. gyro_z), reads live engine state through providers bound
+via ``bind()``, and returns a complete ``MLNavigationOutput``.
+
+``CompositeMLInference`` (with ``TrainedSpeedModel``) handles the D-T2
+speed-model integration exclusively (9-channel ``*_cal`` windows).
+
+``FallbackMLInference`` produces no corrections so the engine runs
+purely classically while models are unavailable.
 """
 
 from __future__ import annotations
@@ -319,3 +328,235 @@ def build_ml_inference(
         return FallbackMLInference()
 
     return CompositeMLInference(speed_model=speed_model)
+
+
+# ====================================================================== #
+# Trained navigation-ML inference (D-T3 + D-T4 + D-T5)
+# ====================================================================== #
+
+#: Default artifact paths (relative to the repository root) for the
+#: navigation-side learned models.
+TRAINED_CORRECTION_MODELS = {
+    "vibration": "models/vibration_classifier.joblib",
+    "imu_correction": "models/imu_correction.joblib",
+    "error_model": "models/error_model.joblib",
+}
+
+
+class TrainedMLInference(MLInference):
+    """Combine trained D-T3 / D-T4 / D-T5 artifacts into one ``MLInference``.
+
+    Consumes 6-channel calibrated IMU windows ``(1, WINDOW_SIZE, 6)``
+    (``accel_x..gyro_z``) - the exact layout the models were trained on.
+    Live engine state is injected through the providers bound with
+    :meth:`bind` (heading, speed, GNSS age); none of these providers leak
+    reference/GNSS *truth* into the corridor - they are reads of the
+    engine's own estimate.
+
+    Runtime behaviour:
+
+    * D-T3 ``stationary`` -> a 0 m/s pseudo-measurement (tight std).
+    * D-T3 ``vibration`` -> accel-correction uncertainty inflated.
+    * D-T4 -> ``accel_correction_enu`` (m/s^2, ENU) + ``std_mps2``.
+    * D-T5 -> ``position_error_m`` = drift_rate * GNSS age (finite only;
+      non-finite age degrades to 0 so ``inf``/``nan`` never propagates).
+
+    When an artifact is missing/corrupt or inference raises, that field is
+    simply omitted from the output - the engine runs classically and never
+    crashes.
+    """
+
+    #: Pseudo-measurement uncertainty for the stationary speed update (m/s).
+    STATIONARY_SPEED_STD_MPS = 0.1
+    #: Multiplier applied to the accel-correction std in ``vibration``.
+    VIBRATION_STD_MULTIPLIER = 2.0
+
+    def __init__(
+        self,
+        vibration_path: str | Path | None = None,
+        imu_correction_path: str | Path | None = None,
+        error_model_path: str | Path | None = None,
+        repo_root: str | Path | None = None,
+    ):
+        self.repo_root = Path(repo_root) if repo_root else None
+
+        self._vibration = None
+        self._imu_correction = None
+        self._error_model = None
+
+        config = {
+            "vibration": vibration_path or TRAINED_CORRECTION_MODELS["vibration"],
+            "imu_correction": (
+                imu_correction_path or TRAINED_CORRECTION_MODELS["imu_correction"]
+            ),
+            "error_model": error_model_path or TRAINED_CORRECTION_MODELS["error_model"],
+        }
+
+        for key, factory in (
+            (
+                "vibration",
+                self._load_vibration,
+            ),
+            (
+                "imu_correction",
+                self._load_imu_correction,
+            ),
+            (
+                "error_model",
+                self._load_error_model,
+            ),
+        ):
+            try:
+                setattr(self, f"_{key}", factory(config[key]))
+            except Exception as error:  # noqa: BLE001 - never break the engine
+                logger.warning("D-%s adapter unavailable (%s)", key, error)
+                setattr(self, f"_{key}", None)
+
+    # ------------------------------------------------------------------ #
+    # Artifact loading (lazy imports keep engine startup light)
+    # ------------------------------------------------------------------ #
+
+    def _resolve(self, path: str | Path) -> Path | None:
+        path = Path(path)
+        if self.repo_root is not None:
+            return self.repo_root / path
+        if path.is_absolute() or path.exists():
+            return path
+        candidate = Path(__file__).resolve().parents[3] / path
+        return candidate if candidate.exists() else path
+
+    def _load_vibration(self, path):
+        if not Path(path or "").exists() and not (self._resolve(path)).exists():
+            return None
+        from src.models.vibration_classifier.inference import (
+            RandomForestVibrationClassifier,
+        )
+
+        return RandomForestVibrationClassifier(self._resolve(path))
+
+    def _load_imu_correction(self, path):
+        from src.models.imu_correction.inference import (
+            RandomForestIMUCorrectionModel,
+        )
+
+        return RandomForestIMUCorrectionModel(self._resolve(path))
+
+    def _load_error_model(self, path):
+        from src.models.fusion_correction.inference import RandomForestErrorModel
+
+        return RandomForestErrorModel(self._resolve(path))
+
+    # ------------------------------------------------------------------ #
+    # Providers (live engine state, no reference/GNSS-truth leakage)
+    # ------------------------------------------------------------------ #
+
+    def bind(
+        self,
+        heading_provider: Optional[callable] = None,
+        speed_provider: Optional[callable] = None,
+        gnss_age_provider: Optional[callable] = None,
+    ) -> None:
+        """Bind live engine state readers to the correction adapters."""
+        if self._imu_correction is not None:
+            self._imu_correction.set_heading_provider(heading_provider)
+        if self._error_model is not None:
+            self._error_model.set_speed_provider(speed_provider)
+            self._error_model.set_gnss_age_provider(gnss_age_provider)
+
+    # ------------------------------------------------------------------ #
+    # Inference
+    # ------------------------------------------------------------------ #
+
+    @property
+    def available(self) -> bool:
+        return any(
+            adapter is not None
+            for adapter in (self._vibration, self._imu_correction, self._error_model)
+        )
+
+    def _window(self, window: IMUWindow) -> Optional[np.ndarray]:
+        """Normalize to ``(1, W, 6)``; a 9-channel speed window is trimmed."""
+        windows = np.asarray(window, dtype=np.float64)
+        if windows.ndim == 2:
+            windows = windows[np.newaxis, :, :]
+        if windows.ndim != 3 or windows.shape[1] < 2 or windows.shape[2] < 6:
+            return None
+        if windows.shape[2] > 6:
+            windows = windows[:, :, :6]
+        if not np.isfinite(windows).all():
+            return None
+        return windows
+
+    def evaluate(self, timestamp: float, window: IMUWindow) -> MLNavigationOutput:
+        output = MLNavigationOutput(timestamp=float(timestamp))
+        if not self.available:
+            return output
+
+        windows = self._window(window)
+        if windows is None:
+            return output
+
+        # D-T3 vibration / stationary context
+        context = None
+        if self._vibration is not None:
+            try:
+                context = self._vibration.classify(windows)
+            except Exception as error:  # noqa: BLE001
+                logger.warning("D-T3 classify failed: %s", error)
+                context = None
+
+        stationary = context == "stationary"
+        vibration = context == "vibration"
+
+        if stationary:
+            # 0 m/s pseudo-measurement: the vehicle is detected at rest.
+            output = dataclasses.replace(
+                output,
+                speed_mps=0.0,
+                speed_std_mps=self.STATIONARY_SPEED_STD_MPS,
+            )
+
+        # D-T4 accel correction (rotated to ENU by the engine heading)
+        if self._imu_correction is not None:
+            try:
+                correction, std = self._imu_correction.predict_correction(windows)
+                if correction is not None and std is not None:
+                    correction = np.asarray(correction, dtype=np.float64)
+                    std = float(std)
+                    if (
+                        correction.shape == (2,)
+                        and np.isfinite(correction).all()
+                        and np.isfinite(std)
+                    ):
+                        if vibration:
+                            std = std * self.VIBRATION_STD_MULTIPLIER
+                        output = dataclasses.replace(
+                            output,
+                            accel_correction_enu=(
+                                float(correction[0]),
+                                float(correction[1]),
+                            ),
+                            accel_correction_std_mps2=float(std),
+                        )
+            except Exception as error:  # noqa: BLE001
+                logger.warning("D-T4 prediction failed: %s", error)
+
+        # D-T5 expected position error (drift rate * GNSS age); the adapter
+        # guarantees a finite, non-negative age so no inf/nan reaches the
+        # engine state.
+        if self._error_model is not None:
+            try:
+                error_m, _confidence = self._error_model.predict_error(windows)
+                if (
+                    error_m is not None
+                    and np.isfinite(error_m)
+                    and float(error_m) >= 0.0
+                ):
+                    output = dataclasses.replace(
+                        output,
+                        position_error_m=float(error_m),
+                    )
+            except Exception as error:  # noqa: BLE001
+                logger.warning("D-T5 prediction failed: %s", error)
+
+        return output

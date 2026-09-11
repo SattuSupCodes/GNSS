@@ -249,15 +249,14 @@ class IDREngine:
 
     def _refresh_state(self, timestamp: float) -> None:
         s = self.fusion.to_state(timestamp)
-        # D-T5 error floor: when a learned error estimate is available it
-        # overrides the (often optimistic while healthy) covariance-derived
-        # value, so confidence reflects the predicted outage drift.
+        # Baseline position error comes from the filter covariance; a learned
+        # D-T5 floor may raise it (never lower it) to reflect predicted
+        # outage drift.
+        base_error = self.fusion.filter.position_std_m
         if self._ml_position_error_m is not None and self._ml_position_error_m >= 0.0:
-            s.position_error_m = max(
-                float(s.position_error_m), float(self._ml_position_error_m)
-            )
+            s.position_error_m = max(base_error, float(self._ml_position_error_m))
         else:
-            s.position_error_m = self.fusion.filter.position_std_m
+            s.position_error_m = base_error
         s.confidence = self.confidence.estimate(
             s.position_error_m,
             self.mode,

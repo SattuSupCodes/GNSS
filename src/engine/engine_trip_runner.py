@@ -356,6 +356,16 @@ def run_trip(
     else:
         ml_active = False
 
+    # 6-channel correction window (D-T3/D-T4/D-T5): calibrated IMU block in
+    # the exact layout the navigation-side models were trained on.
+    correction_buffer = (
+        _IMUWindowBuffer(
+            ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"]
+        )
+        if ml_inference is not None
+        else None
+    )
+
     ml_window = deque(maxlen=ml_window_samples)
 
     rows = []
@@ -379,9 +389,9 @@ def run_trip(
         # ML correction hook (D-S7/D-T3/D-T4/D-T5): run on the IMU window and
         # push the learned corrections into the filter BEFORE the GNSS update
         # of the same sample.
-        if ml_inference is not None:
-            ml_window.push(_imu_sensor_row(row))
-            win = ml_window.as_window()
+        if correction_buffer is not None:
+            correction_buffer.push(_imu_sensor_row(row))
+            win = correction_buffer.as_window()
             if win is not None:
                 _bind_ml_context(ml_inference, engine)
                 try:

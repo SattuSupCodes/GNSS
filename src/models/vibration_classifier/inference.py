@@ -23,6 +23,20 @@ DEFAULT_ARTIFACT = Path("models/vibration_classifier.joblib")
 FALLBACK_CLASS = "normal"
 
 
+def _normalize_window(window) -> Optional[np.ndarray]:
+    """Return a ``(1, W, 6)`` validated window or ``None`` when malformed."""
+    windows = np.asarray(window, dtype=np.float64)
+    if windows.ndim == 2:
+        windows = windows[np.newaxis, ...]
+    if windows.ndim != 3:
+        return None
+    if windows.shape[1] != mc.WINDOW_SIZE or windows.shape[2] != 6:
+        return None
+    if not np.isfinite(windows).all():
+        return None
+    return windows
+
+
 class RandomForestVibrationClassifier(VibrationClassifier):
     """Artifact-backed vibration classifier with graceful fallback."""
 
@@ -53,9 +67,9 @@ class RandomForestVibrationClassifier(VibrationClassifier):
         """Classify one IMU window ``(WINDOW_SIZE, 6)`` (or 3-D batched)."""
         if self._model is None:
             return FALLBACK_CLASS
-        windows = np.asarray(window, dtype=np.float64)
-        if windows.ndim == 2:
-            windows = windows[np.newaxis, ...]
+        windows = _normalize_window(window)
+        if windows is None:
+            return FALLBACK_CLASS
         features, _ = mc.compute_window_features(windows)
         preds = mc.predict_forest(self._model, features)
         return CLASSES[int(preds[0])]
@@ -64,9 +78,9 @@ class RandomForestVibrationClassifier(VibrationClassifier):
         """Class probabilities (useful for downstream uncertainty shaping)."""
         if self._model is None:
             return {c: (1.0 if c == FALLBACK_CLASS else 0.0) for c in CLASSES}
-        windows = np.asarray(window, dtype=np.float64)
-        if windows.ndim == 2:
-            windows = windows[np.newaxis, ...]
+        windows = _normalize_window(window)
+        if windows is None:
+            return {c: (1.0 if c == FALLBACK_CLASS else 0.0) for c in CLASSES}
         features, _ = mc.compute_window_features(windows)
         probs = self._model.predict_proba(features)[0]
         return {c: float(p) for c, p in zip(CLASSES, probs)}

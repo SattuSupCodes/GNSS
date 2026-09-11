@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,6 +34,8 @@ import pandas as pd
 
 from src.engine.engine_trip_runner import run_trip
 from src.navigation.engine.model_interface import TrainedMLInference
+
+_DURATION_RE = re.compile(r"__blk(\d+)s", re.IGNORECASE)
 
 
 def scenario_trip(scenario_id: str) -> str:
@@ -82,7 +85,16 @@ def during_blackout_error(est: pd.DataFrame, clean: pd.DataFrame) -> dict:
         "blackout_mean_error_m": float(np.mean(err)) if len(err) else float("nan"),
         "blackout_max_error_m": float(np.max(err)) if len(err) else float("nan"),
         "mean_confidence_blackout": float(out["confidence"].mean()),
-        "mean_predicted_error_blackout_m": float(out["position_error"].mean()),
+        "mean_predicted_error_blackout_m": float(
+            out["position_error"].to_numpy(dtype=float).mean()
+        )
+        if out["position_error"].notna().any()
+        else float("nan"),
+        "ml_error_active_ratio": float(
+            (out["position_error"].to_numpy(dtype=float) > 0.0).mean()
+        )
+        if out["position_error"].notna().any()
+        else 0.0,
         "final_error_after_recovery_m": recovery_err,
     }
 
@@ -116,9 +128,9 @@ def main() -> int:
         frame = pd.read_parquet(REPO_ROOT / entry["file"])
         trip_id = scenario_trip(scenario_id)
         duration_s = None
-        for part in scenario_id.split("_"):
-            if part.endswith("s") and part[:-1].isdigit():
-                duration_s = float(part[:-1])
+        match = _DURATION_RE.search(scenario_id)
+        if match:
+            duration_s = float(match.group(1))
 
         try:
             clean = clean_trajectory(trip_id, config)
@@ -154,6 +166,7 @@ def main() -> int:
                 "baseline_conf_blackout": base_metrics.get("mean_confidence_blackout"),
                 "ml_conf_blackout": ml_metrics.get("mean_confidence_blackout"),
                 "ml_pred_err_blackout_m": ml_metrics.get("mean_predicted_error_blackout_m"),
+                "ml_error_active_ratio": ml_metrics.get("ml_error_active_ratio", 0.0),
                 "baseline_final_err_m": base_metrics.get("final_error_after_recovery_m"),
                 "ml_final_err_m": ml_metrics.get("final_error_after_recovery_m"),
                 "n_blackout_rows": base_metrics.get("n_blackout_rows", 0),
@@ -190,6 +203,13 @@ def main() -> int:
     print("\nAggregates (mean over scenarios):")
     for k, v in aggregates.items():
         print(f"  {k}: {v:.3f}" if isinstance(v, float) else f"  {k}: {v}")
+    # D-T5 evidence: the learned error floor must be finite, positive and
+    # actively raised during blackout rows (not silently inert).
+    active = pd.to_numeric(report["ml_error_active_ratio"], errors="coerce").dropna()
+    print(
+        "\nD-T5 evidence: predicted error floor active on "
+        f"{float(active.mean()) * 100:.1f}% of blackout rows (per-baseline ML run)"
+    )
     print(f"\nSaved report: {out_path}")
     return 0
 

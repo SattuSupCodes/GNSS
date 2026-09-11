@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------- #
+# Navigation engine configuration (D-S11)                                      #
+# Drives src/engine/engine_trip_runner.py and scripts/run_*.py                #
+# Paths below are RELATIVE to the repository root.                            #
+# ---------------------------------------------------------------------------- #
+
+engine:
+  # Filter implementation used by the fusion engine:
+  #   "ekf" | "ukf"
+  filter_type: "ekf"
+
+  # Re-localization aggressiveness after a GNSS outage (soft pull weight).
+  re_localize_inflation: 0.5
+
+  # Uncertainty assumed for a map-matched correction (m).
+  map_match_std_m: 3.0
+
+  # Vehicle kinematic constraints (D-S9).
+  apply_non_holonomic: true
+  apply_zupt: true
+  zupt_speed_threshold_mps: 0.2
+
+  # Map matching (D-S8). Enabled only when a GeoJSON map is provided.
+  map_matching:
+    enabled: true
+    map_geojson: "data/maps/road_network.geojson"
+    candidate_radius_m: 50.0
+    max_candidates: 5
+
+ml:
+  # AI integration (D-S7). Pipeline uses the fallback (classical) model until
+  # trained checkpoints are registered.
+  enabled: false
+  window_samples: 100
+
+output:
+  root: "data/engine"
+  file_pattern: "{run_name}.parquet"

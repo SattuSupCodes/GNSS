@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------- #
+# GNSS + INS fusion configuration (D-S3/D-S4)                                  #
+# Drives the EKF/UKF filter inside src/navigation/fusion/*.py                 #
+# ---------------------------------------------------------------------------- #
+
+fusion:
+  # ekf | ukf
+  filter_type: "ekf"
+
+  # Soft re-localization weight applied to the first fixes after an outage.
+  re_localize_inflation: 0.5
+
+  # Measurement-association innovation gate (m). Fixes whose innovation
+  # exceeds this are treated as outliers/jumps and rejected.
+  max_innovation_m: 500.0
+
+  # Filter initialization (8-state model):
+  #   [east, north, v_east, v_north, heading, gyro_bias,
+  #    accel_bias_east, accel_bias_north]
+  initial_covariance:
+    east_north: 25.0        # m^2
+    velocity: 4.0           # (m/s)^2
+    heading: 0.25           # rad^2
+    gyro_bias: 0.0009       # (rad/s)^2
+    accel_bias: 0.25        # (m/s^2)^2
+
+  # Process noise scaling (per-second units).
+  process_noise:
+    accel: 0.5              # (m/s^2)^2 * s
+    gyro_bias_drift: 0.001
+    accel_bias_drift: 0.001
+
+  # Measurement noise.
+  measurement:
+    gnss_position_std_m: 8.0
+    gnss_speed_std_mps: 0.5
+    gnss_heading_std_rad: 0.2
+    degraded_heading_std_rad: 0.35
+    ml_speed_std_mps: 1.0
+    ml_heading_std_rad: 0.35

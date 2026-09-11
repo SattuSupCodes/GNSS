@@ -181,21 +181,30 @@ class PhoneAligner:
 
     def align_vectors(self, vectors: np.ndarray) -> np.ndarray:
         """Transform ``(n, 3)`` device-frame vectors into the world frame."""
+
         v = np.asarray(vectors, dtype=float)
+
         if v.ndim == 1:
             if v.size == 3:
                 v = v.reshape(1, 3)
             else:
                 v = v.reshape(-1, 3)
+
         if v.ndim != 2 or v.shape[1] != 3:
             raise ValueError(f"expected (n,3) vectors, got shape {v.shape}")
-        out = np.empty_like(v)
+
+        out = np.full_like(v, np.nan, dtype=float)
+
         finite = np.isfinite(v).all(axis=1)
-        if finite.any():
-            out[finite] = np.array(
-                [quat_rotate(self.transform_quat, row) for row in v[finite]]
-            )
-        out[~finite] = np.nan
+
+        if not np.any(finite):
+            return out[0] if v.shape[0] == 1 else out
+
+        out[finite] = np.array(
+            [quat_rotate(self.transform_quat, row) for row in v[finite]],
+            dtype=float,
+        )
+
         return out[0] if v.shape[0] == 1 else out
 
     def align_single(self, vector: np.ndarray) -> np.ndarray:

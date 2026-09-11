@@ -146,6 +146,6 @@ def test_split_files_are_trip_disjoint_and_total():
     assignment = load_split_assignments(root)
     assert set(assignment.values()) == {"train", "validation", "test"}
     ids = list(assignment.keys())
-    assert len([i for i in ids if assignment[i] == "train"]) == 50
-    assert len([i for i in ids if assignment[i] == "validation"]) == 11
-    assert len([i for i in ids if assignment[i] == "test"]) == 11
+    assert len([i for i in ids if assignment[i] == "train"]) == 68
+    assert len([i for i in ids if assignment[i] == "validation"]) == 15
+    assert len([i for i in ids if assignment[i] == "test"]) == 14

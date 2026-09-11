@@ -1,0 +1,28 @@
+# ---------------------------------------------------------------------------- #
+# Map matching configuration (D-S8)                                            #
+# Drives src/navigation/map_matching/*.py                                      #
+# ---------------------------------------------------------------------------- #
+
+map_matching:
+  enabled: false
+  map_geojson: "data/maps/road_network.geojson"
+
+  # Road-graph connectivity (one-way edges only when explicitly true).
+  oneway: false
+
+  # Candidate generation.
+  candidate_radius_m: 50.0
+  max_candidates: 5
+
+  # HMM emission/transition model.
+  sigma_distance_m: 5.0
+  sigma_heading_rad: 0.35
+  transition_gamma: 0.02
+  distance_tolerance_m: 5.0
+
+  # Hard re-localization uncertainty when a map match is applied (m).
+  re_localize_std_m: 3.0
+
+output:
+  root: "data/engine/map_matching"
+  file_pattern: "{run_name}_matched.parquet"

@@ -7,7 +7,7 @@
 
 ## 1. What This Application Is
 
-This directory (`android-app/`) is the **React Native + Expo mobile client** for the SIH 2026 Intelligent Dead Reckoning (IDR) project. It will eventually transform a smartphone into a vehicle positioning system that maintains accurate navigation during GNSS-denied environments (tunnels, urban canyons, parking structures) using **only smartphone-generated sensor data**.
+This directory (`android-app/`) is the **React Native + Axios + Expo mobile client** for the SIH 2026 Intelligent Dead Reckoning (IDR) project. It will eventually transform a smartphone into a vehicle positioning system that maintains accurate navigation during GNSS-denied environments (tunnels, urban canyons, parking structures) using **only smartphone-generated sensor data**.
 
 The companion Python backend (data pipeline, calibration, models, IDR engine) lives in the repo root. This directory is intentionally an **empty structural skeleton** — the two will be connected in a later phase.
 

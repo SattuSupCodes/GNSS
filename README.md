@@ -14,7 +14,7 @@ Develop an AI/ML-enhanced Intelligent Dead Reckoning system that transforms a co
 
 ## Project Objective
 
-Build a production-ready **Intelligent Dead Reckoning Engine (IDREngine)** that:
+Build a production-ready **Intelligent Dead Reckoning Engine (IDREngine)** :
 
 1. Runs entirely on smartphone sensor streams (accelerometer, gyroscope, magnetometer, GNSS)
 2. Maintains navigation state during GNSS outages through learned inertial navigation
@@ -186,7 +186,7 @@ All models export to **ONNX/TFLite** for on-device inference.
 
 | Member | Ownership | Primary Directories |
 |--------|-----------|---------------------|
-| **Aaqib** (30%) | Data Engineering, IO-VNBD Pipeline, Preprocessing, Calibration, Simulation | `data/`, `src/data/`, `src/preprocessing/`, `src/calibration/`, `src/simulation/` |
+| **Aaqib** (30%) | Data Engineering, IO-VNBD Pipeline, Preprocessing, Calibration, Simulation, App Part | `data/`, `src/data/`, `src/preprocessing/`, `src/calibration/`, `src/simulation/` |
 | **Tanishk** (30%) | ML/DL Models, Training, Evaluation, Export | `src/models/`, `models/` |
 | **Shatakshi** (30%) | Navigation Backend, INS, Fusion, Map Matching, IDR Engine | `src/navigation/`, `src/fusion/`, `src/map_matching/`, `src/confidence/`, `src/engine/` |
 | **Atharv** (10%) | Research Support, Testing, Integration, Evaluation, Documentation | `tests/`, `evaluation/`, `research/` |

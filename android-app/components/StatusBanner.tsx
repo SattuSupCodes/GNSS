@@ -4,7 +4,7 @@ import { Animated, StyleSheet, Text, View, type StyleProp, type ViewStyle } from
 import { GlassSurface } from '@/components/Glass';
 import { fonts, radius, spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
-import { friendlyStatus } from '@/services/position';
+import { friendlyPositionText } from '@/services/position';
 import type { PositioningStatus } from '@/types/position';
 
 interface StatusBannerProps {
@@ -15,11 +15,27 @@ interface StatusBannerProps {
   prominent?: boolean;
 }
 
-export function StatusBanner({ status = 'unknown', message, style, prominent = false }: StatusBannerProps) {
+const TONES: Record<PositioningStatus, 'success' | 'warning' | 'critical'> = {
+  available: 'success',
+  degraded: 'warning',
+  lost: 'critical',
+  recovering: 'warning',
+};
+
+const BLINK: Partial<Record<PositioningStatus, boolean>> = {
+  lost: true,
+  recovering: true,
+};
+
+export function StatusBanner({ status = 'available', message, style, prominent = false }: StatusBannerProps) {
   const { theme } = useTheme();
   const blink = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (!BLINK[status]) {
+      blink.setValue(1);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(blink, { toValue: 1, duration: 700, useNativeDriver: true }),
@@ -28,9 +44,10 @@ export function StatusBanner({ status = 'unknown', message, style, prominent = f
     );
     loop.start();
     return () => loop.stop();
-  }, [blink]);
+  }, [status, blink]);
 
-  const tone = status === 'gnss-connected' ? theme.colors.success : status === 'recovering' ? theme.colors.warning : status === 'gnss-lost' ? theme.colors.critical : status === 'gnss-degraded' ? theme.colors.warning : theme.colors.outline;
+  const toneName = TONES[status];
+  const tone = theme.colors[toneName];
 
   return (
     <GlassSurface variant="tactical" style={[styles.banner, prominent && styles.prominent, style]}>
@@ -39,13 +56,8 @@ export function StatusBanner({ status = 'unknown', message, style, prominent = f
       </View>
       <View style={styles.textWrap}>
         <Text style={[styles.message, prominent && styles.messageProminent, { color: theme.colors.onSurface, fontFamily: fonts.semibold }]}>
-          {message ?? friendlyStatus(status)}
+          {message ?? friendlyPositionText(status)}
         </Text>
-        {status !== 'gnss-connected' ? (
-          <Text style={[styles.hint, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
-            Intelligent positioning engaged
-          </Text>
-        ) : null}
       </View>
     </GlassSurface>
   );
@@ -86,10 +98,5 @@ const styles = StyleSheet.create({
   messageProminent: {
     fontSize: 14,
     lineHeight: 19,
-  },
-  hint: {
-    fontSize: 11,
-    lineHeight: 15,
-    marginTop: 2,
   },
 });

@@ -7,20 +7,32 @@ import { Icon } from '@/components/Icon';
 import { Screen } from '@/components/Screen';
 import { ScreenHeader } from '@/components/Header';
 import { fonts, radius, spacing } from '@/constants/theme';
-import { demoRoute, routeSteps } from '@/constants/mockData';
 import { useTheme } from '@/lib/theme';
+import { useNavigationSession } from '@/state/NavigationProvider';
+import { formatMeters } from '@/utils/format';
+import { iconForAction } from '@/utils/maneuver';
 
 export default function StepsScreen() {
   const router = useRouter();
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { snapshot, actions } = useNavigationSession();
+
+  const route = snapshot.route;
+  const maneuvers = route?.maneuvers ?? [];
+  const canStart = route && (snapshot.phase === 'routeReady' || snapshot.phase === 'navigating');
+
+  function start() {
+    actions.startNavigation();
+    router.replace('/navigation/index');
+  }
 
   return (
     <Screen>
       <View style={styles.header}>
         <ScreenHeader
           title="Direction Steps"
-          subtitle={`${demoRoute.destinationLabel} \u00b7 ${demoRoute.duration}`}
+          subtitle={snapshot.destination ? `${snapshot.destination.latitude.toFixed(5)}, ${snapshot.destination.longitude.toFixed(5)}` : undefined}
           onBack={() => router.back()}
         />
       </View>
@@ -29,25 +41,31 @@ export default function StepsScreen() {
         <View style={[styles.routeSummary, { backgroundColor: theme.colors.glassFloating.fill, borderColor: theme.colors.glassFloating.border }]}>
           <Icon name="destination" size={16} color={theme.colors.primary} />
           <Text style={[styles.routeSummaryText, { color: theme.colors.onSurface, fontFamily: fonts.semibold }]}>
-            {demoRoute.originLabel} → {demoRoute.destinationLabel}
+            Current position → Destination
           </Text>
         </View>
 
-        {routeSteps.map((step, index) => {
-          const last = index === routeSteps.length - 1;
+        {maneuvers.length === 0 ? (
+          <Text style={[styles.empty, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
+            No route loaded yet. Pick a destination first.
+          </Text>
+        ) : null}
+
+        {maneuvers.map((maneuver, index) => {
+          const last = index === maneuvers.length - 1;
           return (
-            <View key={step.id} style={styles.stepRow}>
+            <View key={`${maneuver.action}-${index}`} style={styles.stepRow}>
               <View style={styles.stepRail}>
                 <View
                   style={[
                     styles.stepIconRing,
                     last
-                      ? [styles.stepIconArrive, { backgroundColor: theme.colors.success }]
+                      ? { backgroundColor: theme.colors.success }
                       : { backgroundColor: theme.colors.primaryContainer },
                   ]}
                 >
                   <Icon
-                    name={step.icon}
+                    name={iconForAction(maneuver.action)}
                     size={18}
                     color={last ? theme.colors.onPrimary : theme.colors.onPrimaryContainer}
                   />
@@ -56,22 +74,24 @@ export default function StepsScreen() {
               </View>
               <View style={styles.stepTextWrap}>
                 <Text style={[styles.stepInstruction, { color: theme.colors.onSurface, fontFamily: fonts.medium }]}>
-                  {step.instruction}
+                  {maneuver.instruction}
                 </Text>
               </View>
               <Text style={[styles.stepDistance, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.semibold }]}>
-                {step.distance}
+                {formatMeters(maneuver.approachDistanceMeters)}
               </Text>
             </View>
           );
         })}
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
-        <PrimaryButton icon="forward" onPress={() => router.push('/navigation/index')}>
-          Start navigation
-        </PrimaryButton>
-      </View>
+      {canStart ? (
+        <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
+          <PrimaryButton icon="forward" onPress={start}>
+            Start navigation
+          </PrimaryButton>
+        </View>
+      ) : null}
     </Screen>
   );
 }
@@ -110,9 +130,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepIconArrive: {
-    borderColor: 'transparent',
-  },
   rail: {
     flex: 1,
     width: 2,
@@ -127,6 +144,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     paddingTop: spacing.sm,
+  },
+  empty: {
+    textAlign: 'center',
+    marginTop: spacing.xl,
   },
   footer: {
     paddingHorizontal: spacing.gutter,

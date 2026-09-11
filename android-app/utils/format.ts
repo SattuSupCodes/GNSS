@@ -25,3 +25,16 @@ export function greeting(date: Date): string {
   }
   return 'Good evening';
 }
+
+export function formatMeters(meters: number | null): string {
+  if (meters === null || Number.isNaN(meters)) return '--';
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)} km`;
+  }
+  return `${Math.round(meters)} m`;
+}
+
+export function formatSpeedKmh(speedMps: number | null): string {
+  if (speedMps === null || Number.isNaN(speedMps)) return '—';
+  return String(Math.round(speedMps * 3.6));
+}

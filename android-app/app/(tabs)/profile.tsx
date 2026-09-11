@@ -2,14 +2,16 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 
 import { Screen } from '@/components/Screen';
-import { SettingRow, SettingsGroup, SectionHeader } from '@/components/SettingsBits';
+import { SettingRow, SettingsGroup, SectionHeader, ToggleRow } from '@/components/SettingsBits';
 import { NavSphereLogo, NavSphereWordmark } from '@/components/NavSphereLogo';
 import { spacing, fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { useNavigationSession } from '@/state/NavigationProvider';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { theme } = useTheme();
+  const { demoMode, actions, configureForRouting } = useNavigationSession();
 
   return (
     <Screen>
@@ -24,9 +26,26 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        <SectionHeader title="Session" />
+        <SettingsGroup>
+          <ToggleRow
+            icon="flask"
+            title="Demo mode"
+            subtitle="Simulated position, search and routes for offline preview"
+            value={demoMode}
+            onValueChange={actions.setDemoMode}
+          />
+          <SettingRow
+            icon={configureForRouting ? 'gps' : 'warning'}
+            title="Routing backend"
+            subtitle={configureForRouting ? 'GraphHopper configured' : 'Add EXPO_PUBLIC_GRAPHHOPPER_API_KEY to .env'}
+            onPress={undefined}
+          />
+        </SettingsGroup>
+
         <SectionHeader title="Settings" />
         <SettingsGroup>
-          <SettingRow icon="tune" title="Settings" subtitle="Appearance, offline maps & more" onPress={() => router.push('/settings')} />
+          <SettingRow icon="tune" title="Settings" subtitle="Appearance, map, navigation & privacy" onPress={() => router.push('/settings')} />
         </SettingsGroup>
 
         <SectionHeader title="System" />
@@ -34,7 +53,7 @@ export default function ProfileScreen() {
           <SettingRow
             icon="diagnostics"
             title="Diagnostics & sensors"
-            subtitle="Technical telemetry board"
+            subtitle="Live GPS, sensor and position telemetry"
             onPress={() => router.push('/settings/diagnostics')}
           />
           <SettingRow

@@ -1,52 +1,46 @@
-import type { PositioningStatus, PositionProvider } from '@/types/position';
+import { GnssPositionProvider } from '@/services/position/gnssPositionProvider';
+import { HybridPositionProvider } from '@/services/position/hybridPositionProvider';
+import { IdrPositionProvider } from '@/services/position/idrPositionProvider';
+import { DemoPositionProvider } from '@/services/position/demoPositionProvider';
+import type { PositionProvider, PositioningStatus } from '@/types/position';
+import type { Coordinate } from '@/types/routing';
+
+/**
+ * Positioning entry point.
+ *
+ * The default provider is GNSS wrapped in the hybrid seam (today only GNSS
+ * produces fixes — see hybridPositionProvider.ts). IDR is present as a
+ * contract-only provider and never claims a fix.
+ *
+ * Status copy is deliberately truthful: when there is no fix it says exactly
+ * that. There is no fabricated "intelligent positioning" fallback.
+ */
 
 const FRIENDLY_STATUS: Record<PositioningStatus, string> = {
-  'gnss-connected': 'Location is accurate',
-  'gnss-degraded': 'Signal is weak — accuracy reduced',
-  'gnss-lost': 'GPS signal lost — navigation continues with intelligent positioning',
-  recovering: 'Recovering signal',
-  unknown: 'Positioning unavailable',
+  available: 'Location is accurate',
+  degraded: 'GPS signal is weak — accuracy reduced',
+  lost: 'GPS signal lost — waiting for a stronger signal',
+  recovering: 'Recovering GPS signal',
 };
 
-/** User-friendly status copy. No telemetry values ever appear here. */
-export function friendlyStatus(status: PositioningStatus): string {
+export function friendlyPositionText(status: PositioningStatus): string {
   return FRIENDLY_STATUS[status];
 }
 
+// Backwards-compatible alias kept for existing UI call sites.
+export const friendlyStatus = friendlyPositionText;
+
+/** The production provider graph: GNSS (now) → IDR (future contract). */
+export function createDefaultPositionProvider(): PositionProvider {
+  const gnss = new GnssPositionProvider();
+  const idr = new IdrPositionProvider(); // contract only
+  return new HybridPositionProvider([gnss, idr]);
+}
+
 /**
- * Demo provider for previewing UI states only.
- *
- * It deliberately never produces coordinates, speed, or confidence values —
- * it only changes status text so the interface can be exercised end-to-end.
+ * Demo provider for exercising the navigation UI without GPS. Explicitly a
+ * simulation — creating one signals the developer's intent in the UI legend.
  */
-export class StaticPositionProvider implements PositionProvider {
-  readonly providerId = 'static-demo';
-  private readonly listeners = new Set<(status: PositioningStatus) => void>();
-  private current: PositioningStatus = 'gnss-connected';
-
-  get status(): PositioningStatus {
-    return this.current;
-  }
-
-  subscribe(listener: (status: PositioningStatus) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-
-  setStatus(status: PositioningStatus): void {
-    this.current = status;
-    for (const listener of this.listeners) {
-      listener(this.current);
-    }
-  }
-
-  start(): void {
-    // No-op for the demo provider.
-  }
-
-  stop(): void {
-    // No-op for the demo provider.
-  }
+export function createDemoPositionProvider(path: Coordinate[]): DemoPositionProvider {
+  return new DemoPositionProvider(path);
 }

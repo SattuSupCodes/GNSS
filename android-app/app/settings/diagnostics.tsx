@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 
@@ -6,29 +7,70 @@ import { ScreenHeader } from '@/components/Header';
 import { Screen } from '@/components/Screen';
 import { MetricCard, SensorRow, TelemetryChip } from '@/components/Metrics';
 import { fonts, radius, spacing } from '@/constants/theme';
-import { diagnosticsDemo, sensorDemo } from '@/constants/mockData';
-import { useTheme } from '@/lib/theme';
 import { StatusBanner } from '@/components/StatusBanner';
+import { useTheme } from '@/lib/theme';
+import { isSensorAvailable } from '@/services/sensors/sensorManager';
+import { useNavigationSession } from '@/state/NavigationProvider';
+import type { SensorKind } from '@/types/sensor';
+import { formatSpeedKmh } from '@/utils/format';
+
+const SENSORS: { kind: SensorKind; name: string; icon: 'gyro' | 'motion' | 'magnetometer' }[] = [
+  { kind: 'gyroscope', name: 'Gyroscope', icon: 'gyro' },
+  { kind: 'accelerometer', name: 'Accelerometer', icon: 'motion' },
+  { kind: 'magnetometer', name: 'Magnetometer', icon: 'magnetometer' },
+];
+
+const SOURCE_LABEL: Record<string, string> = {
+  gnss: 'GNSS',
+  hybrid: 'GNSS + IDR',
+  idr: 'IDR',
+  unknown: '—',
+};
 
 export default function DiagnosticsScreen() {
   const router = useRouter();
   const { theme } = useTheme();
+  const { snapshot, demoMode } = useNavigationSession();
+  const [sensors, setSensors] = useState<Record<SensorKind, boolean | null>>({
+    gyroscope: null,
+    accelerometer: null,
+    magnetometer: null,
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    for (const sensor of SENSORS) {
+      isSensorAvailable(sensor.kind).then((available) => {
+        if (mounted) {
+          setSensors((prev) => ({ ...prev, [sensor.kind]: available }));
+        }
+      });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const position = snapshot.position;
+  const accuracy = position?.accuracy ?? null;
+  const latitude = position?.latitude ?? null;
+  const longitude = position?.longitude ?? null;
 
   return (
     <Screen>
       <View>
-        <ScreenHeader title="Diagnostics" onBack={() => router.back()} variant="plain" right={<TelemetryChip label="ISRO SIH 2026" value="" tone="demo" />} />
+        <ScreenHeader title="Diagnostics" onBack={() => router.back()} variant="plain" right={<TelemetryChip label={demoMode ? 'DEMO' : 'LIVE'} value="" tone={demoMode ? 'demo' : 'ok'} />} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <StatusBanner status="gnss-connected" />
+        <StatusBanner status={snapshot.positioningStatus} />
 
         <View style={[styles.demoBanner, { backgroundColor: theme.colors.surfaceContainerHigh }]}>
           <Text style={[styles.demoTag, { color: theme.colors.secondary, fontFamily: fonts.black, letterSpacing: 1 }]}>
-            {diagnosticsDemo.label}
+            LIVE TELEMETRY
           </Text>
           <Text style={[styles.demoNote, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.regular }]}>
-            Illustrative values preview the UI layout only. Real values arrive with the sensor, GNSS and IDR pipelines.
+            Values come from the live GNSS provider. IDR and ML speed remain engineering-phase contracts.
           </Text>
         </View>
 
@@ -37,20 +79,20 @@ export default function DiagnosticsScreen() {
             Positioning technology
           </Text>
           <Text style={[styles.constellationValue, { color: theme.colors.onSurface, fontFamily: fonts.semibold }]}>
-            {diagnosticsDemo.constellation}
+            GPS (GNSS)
           </Text>
           <Text style={[styles.constellationMode, { color: theme.colors.secondary, fontFamily: fonts.medium }]}>
-            {diagnosticsDemo.modeLabel}
+            Source: {SOURCE_LABEL[snapshot.positionSource] ?? snapshot.positionSource} · Phase: {snapshot.phase}
           </Text>
         </View>
 
         <View style={styles.grid}>
-          <MetricCard label="Filter confidence" value={diagnosticsDemo.confidence} tone="demo" icon="queryStats" />
-          <MetricCard label="CEP50" value={diagnosticsDemo.cep50} tone="demo" icon="radar" />
-          <MetricCard label="Horiz. accuracy" value={diagnosticsDemo.accuracy} tone="demo" icon="radar" />
-          <MetricCard label="Satellites" value={diagnosticsDemo.satellites} tone="ok" icon="satellite" />
-          <MetricCard label="Update rate" value={diagnosticsDemo.updateRate} tone="demo" icon="pulse" />
-          <MetricCard label="Position mode" value="Fusion" tone="demo" icon="signal" />
+          <MetricCard label="Latitude" value={latitude !== null ? latitude.toFixed(5) : '--'} tone="idle" icon="radar" />
+          <MetricCard label="Longitude" value={longitude !== null ? longitude.toFixed(5) : '--'} tone="idle" icon="radar" />
+          <MetricCard label="Horiz. accuracy" value={accuracy !== null ? accuracy.toFixed(1) : '--'} unit="m" tone={accuracy !== null && accuracy > 60 ? 'warn' : 'ok'} icon="radar" />
+          <MetricCard label="Speed" value={formatSpeedKmh(snapshot.speedMps)} unit="km/h" tone="ok" icon="speed" />
+          <MetricCard label="Heading" value={snapshot.headingDeg !== null ? `${Math.round(snapshot.headingDeg)}\u00b0` : '--'} tone="idle" icon="compass" />
+          <MetricCard label="Position mode" value={SOURCE_LABEL[snapshot.positionSource] ?? '—'} tone="ok" icon="signal" />
         </View>
 
         <View style={styles.sensorGroup}>
@@ -58,9 +100,18 @@ export default function DiagnosticsScreen() {
             SENSOR PIPELINE
           </Text>
           <GlassSurface variant="floating" style={styles.sensorCard}>
-            {sensorDemo.map((sensor) => (
-              <SensorRow key={sensor.id} icon={sensor.icon} name={sensor.name} state={sensor.state} tone={sensor.tone} />
-            ))}
+            {SENSORS.map((sensor) => {
+              const available = sensors[sensor.kind];
+              return (
+                <SensorRow
+                  key={sensor.kind}
+                  icon={sensor.icon}
+                  name={sensor.name}
+                  state={available === null ? 'Checking' : available ? 'Available' : 'Unavailable'}
+                  tone={available === null ? 'idle' : available ? 'ok' : 'warn'}
+                />
+              );
+            })}
           </GlassSurface>
         </View>
       </ScrollView>

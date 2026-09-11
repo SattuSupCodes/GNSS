@@ -1,29 +1,64 @@
-import { View, StyleSheet, Text } from 'react-native';
+import { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GlassSheet } from '@/components/GlassSheet';
 import { IconButton } from '@/components/IconButton';
 import { ManeuverCard } from '@/components/ManeuverCard';
-import { MapCanvas } from '@/components/MapCanvas';
-import { NavCone } from '@/components/MapAnnotations';
+import { NavMap } from '@/components/maps/NavMap';
 import { NavSphereLogo } from '@/components/NavSphereLogo';
 import { PrimaryButton, SecondaryButton } from '@/components/Buttons';
 import { Screen } from '@/components/Screen';
 import { SpeedBadge } from '@/components/SpeedBadge';
 import { StatusBanner } from '@/components/StatusBanner';
 import { fonts, radius, spacing } from '@/constants/theme';
-import { demoNavSession } from '@/constants/mockData';
+import { formatEtaTime, formatRemainingDuration } from '@/core/eta';
 import { useTheme } from '@/lib/theme';
+import { useNavigationSession } from '@/state/NavigationProvider';
+import { formatMeters, formatSpeedKmh } from '@/utils/format';
+import { iconForAction } from '@/utils/maneuver';
+
+const PHASE_LABEL: Record<string, string> = {
+  starting: 'Confirming position',
+  navigating: 'Navigating',
+  degraded: 'Reduced accuracy',
+  lost: 'Signal lost',
+  recovering: 'Recovering signal',
+  rerouting: 'Rerouting',
+  arrived: 'Arrived',
+};
 
 export default function NavigationScreen() {
   const router = useRouter();
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { snapshot, actions, demoMode, settings } = useNavigationSession();
+  const [followUser, setFollowUser] = useState(true);
+
+  const route = snapshot.route;
+  const progress = snapshot.progress;
+  const maneuver = progress?.nextManeuver ?? null;
+  const nextAfter = maneuver && progress?.remainingManeuvers ? progress.remainingManeuvers[1] ?? null : null;
+  const status = snapshot.positioningStatus;
+  const prominentStatus = status !== 'available' || snapshot.phase === 'rerouting';
+
+  function endNavigation() {
+    actions.cancelNavigation();
+    router.replace('/');
+  }
 
   return (
     <Screen topInset={false} bottomInset={false}>
-      <MapCanvas backdrop="tunnel" />
+      <NavMap
+        styleId={settings.map.styleId}
+        coords={route?.geometry ?? null}
+        origin={null}
+        destination={snapshot.destination}
+        userPosition={snapshot.position}
+        followUser={followUser}
+        onUserInteraction={() => setFollowUser(false)}
+      />
 
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.md }]}>
         <View style={styles.brandPill}>
@@ -33,69 +68,85 @@ export default function NavigationScreen() {
           <Text style={[styles.title, { color: theme.colors.onSurface, fontFamily: fonts.bold }]}>
             Turn-by-Turn Guidance
           </Text>
-          <Text
-            numberOfLines={1}
-            style={[styles.destination, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}
-          >
-            {demoNavSession.destinationLabel}
+          <Text numberOfLines={1} style={[styles.destination, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
+            {demoMode ? 'Demo drive · simulated position' : snapshot.destination ? `${snapshot.destination.latitude.toFixed(5)}, ${snapshot.destination.longitude.toFixed(5)}` : ''}
           </Text>
         </View>
         <IconButton name="mute" accessibilityLabel="Mute guidance" />
       </View>
 
-      <View style={[styles.bannerWrap, { top: insets.top + 96 }]}>
-        <StatusBanner status="gnss-lost" prominent />
-      </View>
+      {prominentStatus ? (
+        <View style={[styles.bannerWrap, { top: insets.top + 96 }]}>
+          <StatusBanner status={status} prominent />
+        </View>
+      ) : null}
 
-      <View style={[styles.maneuverWrap, { top: insets.top + 190 }]}>
-        <ManeuverCard
-          icon="turnRight"
-          instruction={demoNavSession.currentInstruction}
-          distance={demoNavSession.currentDistance}
-          lanes={{ total: 4, active: 2, direction: 'right' }}
-          next={demoNavSession.next}
-        />
-      </View>
+      {snapshot.phase !== 'arrived' ? (
+        <View style={[styles.maneuverWrap, { top: insets.top + (prominentStatus ? 190 : 146) }]}>
+          {maneuver ? (
+            <ManeuverCard
+              icon={iconForAction(maneuver.action)}
+              instruction={maneuver.instruction}
+              distance={formatMeters(progress?.distanceToNextManeuverMeters ?? maneuver.approachDistanceMeters)}
+              next={nextAfter ? { icon: iconForAction(nextAfter.action), label: nextAfter.instruction, distance: formatMeters(nextAfter.approachDistanceMeters) } : undefined}
+            />
+          ) : (
+            <ManeuverCard icon="straight" instruction="Proceeding to destination" next={undefined} />
+          )}
+        </View>
+      ) : null}
 
-      <View style={styles.centerCone} pointerEvents="none">
-        <NavCone rotation={18} />
-      </View>
+      {snapshot.phase === 'arrived' ? (
+        <View style={[styles.arrivedWrap, { top: insets.top + 146 }]}>
+          <GlassSheet style={styles.arrivedCard}>
+            <Text style={[styles.arrivedTitle, { color: theme.colors.success, fontFamily: fonts.bold }]}>
+              You’ve arrived
+            </Text>
+            <Text style={[styles.arrivedSub, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
+              Destination reached. Safe travels.
+            </Text>
+          </GlassSheet>
+        </View>
+      ) : null}
 
       <View style={[styles.rightControls, { top: insets.top + 190 }]}>
-        <IconButton name="recenter" accessibilityLabel="Recenter map" />
+        <IconButton name="recenter" accessibilityLabel="Recenter map" onPress={() => setFollowUser(true)} />
       </View>
 
       <View style={[styles.speedBadge, { top: insets.top + 320 }]}>
-        <SpeedBadge value="—" limit="60" />
+        <SpeedBadge value={formatSpeedKmh(snapshot.speedMps)} limit="—" />
       </View>
 
       <View style={[styles.bottomWrap, { bottom: insets.bottom + spacing.md }]}>
         <GlassSheet>
           <View style={styles.etaRow}>
             <View>
-              <Text style={[styles.eta, { color: theme.colors.primary, fontFamily: fonts.extrabold }]}>{demoNavSession.eta}</Text>
+              <Text style={[styles.eta, { color: theme.colors.primary, fontFamily: fonts.extrabold }]}>
+                {formatEtaTime(snapshot.etaMillis)}
+              </Text>
               <Text style={[styles.etaMeta, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
-                {`${demoNavSession.durationRemaining} \u00b7 ${demoNavSession.distanceRemaining}`}
+                {`${progress ? formatRemainingDuration(progress.remainingDurationSeconds) : '--'} \u00b7 ${progress ? formatMeters(progress.remainingDistanceMeters) : '--'}`}
               </Text>
             </View>
             <View style={[styles.smoothPill, { backgroundColor: theme.colors.secondaryContainer }]}>
               <Text style={[styles.smoothText, { color: theme.colors.onSecondaryContainer, fontFamily: fonts.semibold }]}>
-                {demoNavSession.smoothFlow}
+                {PHASE_LABEL[snapshot.phase] ?? 'Navigation'}
               </Text>
             </View>
           </View>
 
+          {snapshot.rerouting ? (
+            <Text style={[styles.rerouteNote, { color: theme.colors.warning, fontFamily: fonts.medium }]}>
+              Finding a better route…
+            </Text>
+          ) : null}
+
           <View style={styles.actions}>
-            <SecondaryButton icon="list" onPress={() => router.push('/routing/steps')}>
+            <SecondaryButton icon="list" onPress={() => router.back()}>
               Overview
             </SecondaryButton>
-            <SecondaryButton icon="locationPin">Add Stop</SecondaryButton>
             <View style={{ flex: 1 }}>
-              <PrimaryButton
-                icon="gpsOff"
-                style={{ backgroundColor: theme.colors.error }}
-                onPress={() => router.replace('/')}
-              >
+              <PrimaryButton icon="gpsOff" style={{ backgroundColor: theme.colors.error }} onPress={endNavigation}>
                 End
               </PrimaryButton>
             </View>
@@ -138,15 +189,15 @@ const styles = StyleSheet.create({
     right: spacing.gutter,
     zIndex: 10,
   },
-  centerCone: {
+  arrivedWrap: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
+    left: spacing.gutter,
+    right: spacing.gutter,
+    zIndex: 10,
   },
+  arrivedCard: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.lg },
+  arrivedTitle: { fontSize: 20, lineHeight: 26 },
+  arrivedSub: { fontSize: 13, lineHeight: 18, marginTop: 2 },
   rightControls: {
     position: 'absolute',
     right: spacing.gutter,
@@ -178,6 +229,11 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   smoothText: { fontSize: 13, lineHeight: 18 },
+  rerouteNote: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: spacing.md,
+  },
   actions: {
     flexDirection: 'row',
     gap: spacing.md,

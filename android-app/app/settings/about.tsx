@@ -40,9 +40,9 @@ export default function AboutScreen() {
 
         <SectionHeader title="Status" />
         <SettingsGroup>
-          <Text style={[styles.row, { color: theme.colors.onSurface, fontFamily: fonts.medium }]}>UI preview build v1.0.0</Text>
+          <Text style={[styles.row, { color: theme.colors.onSurface, fontFamily: fonts.medium }]}>Navigation app build v1.1.0</Text>
           <Text style={[styles.row, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.regular }]}>
-            GNSS, IDR, map engine and routing are engineering-phase, not active in this preview.
+            Live GNSS positioning, MapLibre maps, GraphHopper routing and turn-by-turn guidance are active. IDR and ML-fusion modules are engineering-phase contracts.
           </Text>
         </SettingsGroup>
       </ScrollView>

@@ -21,7 +21,7 @@ export default function OfflineMapsScreen() {
         </View>
 
         <Text style={[styles.note, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
-          Plan regions to download for navigation without connectivity. Downloads arrive with the map engine phase.
+          Maps are currently streamed from OpenFreeMap as you drive. Packaged region downloads for full offline navigation are not implemented yet.
         </Text>
 
         <SectionHeader title="Regions" />

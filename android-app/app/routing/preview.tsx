@@ -1,32 +1,67 @@
-import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PrimaryButton, SecondaryButton } from '@/components/Buttons';
 import { Chip } from '@/components/Chip';
 import { GlassSheet } from '@/components/GlassSheet';
 import { Icon } from '@/components/Icon';
-import { MapCanvas } from '@/components/MapCanvas';
-import { RouteLine, Waypoint } from '@/components/MapAnnotations';
+import { NavMap } from '@/components/maps/NavMap';
+import { Waypoint } from '@/components/MapAnnotations';
 import { ModeTabs } from '@/components/ModeTabs';
 import { Screen } from '@/components/Screen';
 import { ScreenHeader } from '@/components/Header';
 import { fonts, radius, spacing } from '@/constants/theme';
-import { demoRoute, routeModes } from '@/constants/mockData';
+import { estimateArrivalMillis, formatRemainingDuration } from '@/core/eta';
+import { TRAVEL_MODE_OPTIONS } from '@/types/routing';
 import { useTheme } from '@/lib/theme';
-
-const ROUTE_POINTS = '64,500 120,440 170,330 230,260 288,240 316,196';
+import { useNavigationSession } from '@/state/NavigationProvider';
+import type { TravelMode } from '@/types/routing';
+import { formatClock, formatMeters } from '@/utils/format';
 
 export default function RoutePreviewScreen() {
   const router = useRouter();
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const [mode, setMode] = useState(demoRoute.mode);
+  const { lat, lng, name, address, mode } = useLocalSearchParams() as Record<string, string | undefined>;
+  const { snapshot, actions, settings } = useNavigationSession();
+  const [selectedMode, setSelectedMode] = useState<TravelMode>((mode as TravelMode) ?? 'car');
+
+  const destination =
+    lat && lng && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng))
+      ? { latitude: Number(lat), longitude: Number(lng) }
+      : null;
+
+  useEffect(() => {
+    if (destination) {
+      actions.requestRoute(destination, selectedMode).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destination?.latitude, destination?.longitude, selectedMode]);
+
+  const route = snapshot.route;
+  const eta = route ? estimateArrivalMillis(route.durationSeconds) : null;
+  const durationLabel = route ? formatRemainingDuration(route.durationSeconds) : '--';
+  const distanceLabel = route ? formatMeters(route.distanceMeters) : '--';
+  const calculating = snapshot.phase === 'calculating' || snapshot.phase === 'searching';
+  const errorMessage = snapshot.phase === 'error' ? snapshot.error : null;
+
+  const startNavigation = useCallback(() => {
+    actions.startNavigation();
+    router.replace('/navigation/index');
+  }, [actions, router]);
 
   return (
     <Screen topInset={false} bottomInset={false}>
-      <MapCanvas backdrop="route" />
+      <NavMap
+        styleId={settings.map.styleId}
+        coords={route?.geometry ?? null}
+        origin={null}
+        destination={destination}
+        userPosition={snapshot.position}
+        followUser={false}
+      />
 
       <View style={styles.headerOverlay}>
         <ScreenHeader
@@ -36,57 +71,84 @@ export default function RoutePreviewScreen() {
         />
       </View>
 
-      <View style={styles.etaPill}>
-        <Chip label={`ETA ${demoRoute.eta}`} icon="clock" />
-      </View>
-
-      <RouteLine points={ROUTE_POINTS} />
-
-      <View style={styles.startMarker} pointerEvents="none">
-        <Waypoint label="START" color={theme.colors.success} size={22} />
-      </View>
-      <View style={styles.destMarker} pointerEvents="none">
-        <Waypoint icon="flight" color={theme.colors.primary} size={32} />
-      </View>
+      {destination ? (
+        <View style={styles.destMarker} pointerEvents="none">
+          <Waypoint label="Dest" />
+        </View>
+      ) : null}
 
       <View style={[styles.bottomWrap, { bottom: insets.bottom + spacing.md }]}>
         <GlassSheet>
-          <View style={styles.summaryRow}>
-            <View>
-              <Text style={[styles.eta, { color: theme.colors.primary, fontFamily: fonts.extrabold }]}>{demoRoute.eta}</Text>
-              <Text style={[styles.summaryMeta, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
-                {`${demoRoute.duration} \u00b7 ${demoRoute.distanceKm}`}
+          <Text numberOfLines={1} style={[styles.destinationName, { color: theme.colors.onSurface, fontFamily: fonts.semibold }]}>
+            {name || 'Selected destination'}
+          </Text>
+          <Text numberOfLines={1} style={[styles.destinationAddress, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.regular }]}>
+            {address || (destination ? `${destination.latitude.toFixed(5)}, ${destination.longitude.toFixed(5)}` : '')}
+          </Text>
+
+          {calculating ? (
+            <View style={styles.statusRow}>
+              <Icon name="pulse" size={18} color={theme.colors.secondary} />
+              <Text style={[styles.statusText, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
+                {snapshot.phase === 'searching' ? 'Waiting for your GPS position…' : 'Calculating best route…'}
               </Text>
             </View>
-            <View style={[styles.fastestPill, { backgroundColor: theme.colors.secondaryContainer }]}>
-              <Text style={[styles.fastestText, { color: theme.colors.onSecondaryContainer, fontFamily: fonts.semibold }]}>
-                Fastest route
-              </Text>
+          ) : null}
+
+          {errorMessage ? (
+            <View style={[styles.errorBox, { backgroundColor: theme.colors.errorContainer }]}>
+              <Icon name="alert" size={18} color={theme.colors.onErrorContainer} />
+              <View style={styles.errorText}>
+                <Text style={[styles.errorMessage, { color: theme.colors.onErrorContainer, fontFamily: fonts.medium }]}>
+                  {errorMessage}
+                </Text>
+                <Text style={[styles.errorHint, { color: theme.colors.onErrorContainer, fontFamily: fonts.regular }]}>
+                  Add EXPO_PUBLIC_GRAPHHOPPER_API_KEY to `.env`, or head to Profile → Demo mode.
+                </Text>
+              </View>
             </View>
-          </View>
+          ) : null}
 
-          <View style={styles.modesRow}>
-            <ModeTabs options={routeModes} value={mode} onChange={setMode} />
-          </View>
+          {route ? (
+            <>
+              <View style={styles.summaryRow}>
+                <View>
+                  <Text style={[styles.eta, { color: theme.colors.primary, fontFamily: fonts.extrabold }]}>
+                    {formatClock(new Date(eta ?? 0))}
+                  </Text>
+                  <Text style={[styles.summaryMeta, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
+                    {`${durationLabel} \u00b7 ${distanceLabel}`}
+                  </Text>
+                </View>
+                <View style={[styles.fastestPill, { backgroundColor: theme.colors.secondaryContainer }]}>
+                  <Text style={[styles.fastestText, { color: theme.colors.onSecondaryContainer, fontFamily: fonts.semibold }]}>
+                    {snapshot.phase === 'rerouting' ? 'Rerouting' : 'Estimated'}
+                  </Text>
+                </View>
+              </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-            <Chip icon="toll" label="Tolls possible" />
-            <Chip icon="route" label={demoRoute.via} />
-            <Chip icon="traffic" label="Light traffic" />
-          </ScrollView>
+              <View style={styles.modesRow}>
+                <ModeTabs
+                  options={TRAVEL_MODE_OPTIONS}
+                  value={selectedMode}
+                  onChange={(id) => setSelectedMode(id as TravelMode)}
+                />
+              </View>
 
-          <View style={[styles.tipRow, { backgroundColor: theme.colors.surfaceContainerHigh }]}>
-            <Icon name="headsUp" size={18} color={theme.colors.secondary} />
-            <Text style={[styles.tipText, { color: theme.colors.onSurfaceVariant, fontFamily: fonts.medium }]}>
-              {demoRoute.tip}
-            </Text>
-          </View>
+              <View style={styles.chipsRow}>
+                <Chip icon="route" label={`${route.maneuvers.length - 1} navigations`} />
+                <Chip icon="compass" label="From current GPS position" />
+              </View>
+            </>
+          ) : null}
 
           <View style={styles.actions}>
-            <SecondaryButton icon="list" onPress={() => router.push('/routing/steps')}>
-              Steps
-            </SecondaryButton>
-            <PrimaryButton icon="forward" onPress={() => router.push('/navigation/index')}>
+            {errorMessage ? (
+              <SecondaryButton icon="refresh" onPress={() => actions.retryRoute().catch(() => {})} disabled={!destination}>
+                Retry
+              </SecondaryButton>
+            ) : null}
+            <PrimaryButton icon="forward" disabled={!route} loading={calculating} onPress={startNavigation}>
               Start
             </PrimaryButton>
           </View>
@@ -103,19 +165,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  etaPill: {
-    position: 'absolute',
-    top: 96,
-    right: spacing.gutter,
-  },
-  startMarker: {
-    position: 'absolute',
-    left: 40,
-    top: 460,
-  },
   destMarker: {
     position: 'absolute',
-    right: 56,
+    right: 40,
     top: 140,
   },
   bottomWrap: {
@@ -123,13 +175,34 @@ const styles = StyleSheet.create({
     left: spacing.gutter,
     right: spacing.gutter,
   },
+  destinationName: { fontSize: 17, lineHeight: 22 },
+  destinationAddress: { fontSize: 12, lineHeight: 16, marginTop: 1 },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  statusText: { fontSize: 13, lineHeight: 18 },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  errorText: { flex: 1 },
+  errorMessage: { fontSize: 13, lineHeight: 18 },
+  errorHint: { fontSize: 11, lineHeight: 16, marginTop: 2 },
   summaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: spacing.md,
     marginBottom: spacing.md,
   },
-  eta: { fontSize: 30, lineHeight: 34 },
+  eta: { fontSize: 28, lineHeight: 32 },
   summaryMeta: { fontSize: 14, lineHeight: 19, marginTop: 2 },
   fastestPill: {
     borderRadius: radius.full,
@@ -137,17 +210,13 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   fastestText: { fontSize: 13, lineHeight: 18 },
-  modesRow: { marginLeft: -spacing.lg, marginRight: -spacing.lg },
-  chipsRow: { gap: spacing.sm, paddingTop: spacing.md, paddingRight: spacing.xl },
-  tipRow: {
+  modesRow: { marginLeft: -spacing.gutter - spacing.lg, marginRight: -spacing.gutter - spacing.lg },
+  chipsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    marginTop: spacing.lg,
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
   },
-  tipText: { flex: 1, fontSize: 13, lineHeight: 18 },
   actions: {
     flexDirection: 'row',
     gap: spacing.md,

@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, View } from 'react-native';
 
 import { useTheme, ThemeProvider } from '@/lib/theme';
+import { NavigationProvider } from '@/state/NavigationProvider';
 
 function RootStack() {
   const { theme } = useTheme();
@@ -46,7 +47,9 @@ function RootStack() {
 export default function RootLayout() {
   return (
     <ThemeProvider>
-      <RootStack />
+      <NavigationProvider>
+        <RootStack />
+      </NavigationProvider>
     </ThemeProvider>
   );
 }

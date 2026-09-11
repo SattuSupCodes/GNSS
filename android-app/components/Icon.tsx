@@ -38,6 +38,7 @@ const iconMap = {
   back: { set: MI, name: 'arrow-back' },
   forward: { set: MI, name: 'arrow-forward' },
   close: { set: MI, name: 'close' },
+  refresh: { set: MI, name: 'refresh' },
   chevronRight: { set: MI, name: 'chevron-right' },
   chevronLeft: { set: MI, name: 'chevron-left' },
   more: { set: MI, name: 'more-vert' },
